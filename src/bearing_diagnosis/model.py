@@ -42,9 +42,11 @@ class TimeEncoder(nn.Module):
 
 
 class SpectrumEncoder(nn.Module):
-    def __init__(self, pool_segments: int = 8):
+    def __init__(self, pool_segments: int = 8, in_channels: int = 2):
         super().__init__()
-        self.blocks = nn.Sequential(ConvBlock(2, 32, 9), ConvBlock(32, 64, 7), ConvBlock(64, 128, 5))
+        self.blocks = nn.Sequential(
+            ConvBlock(in_channels, 32, 9), ConvBlock(32, 64, 7), ConvBlock(64, 128, 5)
+        )
         self.pool = nn.AdaptiveAvgPool1d(pool_segments)
         self.projection = nn.Linear(128 * pool_segments, 128)
 
@@ -71,7 +73,8 @@ class BearingDiagnosisModel(nn.Module):
         super().__init__()
         self.config = config
         self.time_encoder = TimeEncoder(config.time_pool_segments)
-        self.spectrum_encoder = SpectrumEncoder(config.spectrum_pool_segments)
+        spectrum_channels = 4 if config.spectrum_representation == "shaft_order_v2" else 2
+        self.spectrum_encoder = SpectrumEncoder(config.spectrum_pool_segments, spectrum_channels)
         self.spectrum_fusion = mlp([257, 128, 64], config.dropout)
         self.shared_mechanism = mlp([mechanism_feature_count * 2, 64, 32])
         self.global_mechanism = mlp([32, 64])
@@ -110,23 +113,38 @@ class BearingDiagnosisModel(nn.Module):
         auxiliary_logit = self.mechanism_aux_head(z_phy).squeeze(1)
         gate = torch.zeros_like(q)
         gated_phy = torch.zeros_like(z_spec)
+        spectrum_expert_logit = self.spectrum_only_head(z_spec).squeeze(1)
+        mechanism_expert_logit = self.mechanism_only_head(z_phy).squeeze(1)
         if self.config.experiment == "spectrum_only":
-            abnormal_logit = self.spectrum_only_head(z_spec).squeeze(1)
+            abnormal_logit = spectrum_expert_logit
         elif self.config.experiment == "mechanism_only":
-            abnormal_logit = self.mechanism_only_head(z_phy).squeeze(1)
+            abnormal_logit = mechanism_expert_logit
         elif self.config.experiment == "concat":
             abnormal_logit = self.concat_head(torch.cat([z_spec, z_phy], dim=1)).squeeze(1)
         else:
             projected = self.global_projection(z_phy)
             gate = q * torch.sigmoid(self.global_gate(torch.cat([z_spec, projected, q], dim=1)))
             gated_phy = gate * projected
-            fused = self.layer_norm(z_spec + gated_phy)
-            abnormal_logit = self.gated_head(torch.cat([fused, z_spec * gated_phy], dim=1)).squeeze(1)
+            if self.config.gated_fusion == "competitive_v2":
+                # A quality-bounded mixture of experts.  Unlike v1, neither branch
+                # is structurally the residual/main path.  q=0 safely selects the
+                # spectrum expert; otherwise the learned gate may favor either.
+                abnormal_logit = (
+                    (1.0 - gate.squeeze(1)) * spectrum_expert_logit
+                    + gate.squeeze(1) * mechanism_expert_logit
+                )
+            else:
+                fused = self.layer_norm(z_spec + gated_phy)
+                abnormal_logit = self.gated_head(torch.cat([fused, z_spec * gated_phy], dim=1)).squeeze(1)
         return {
             "abnormal_logit": abnormal_logit,
             "mechanism_aux_logit": auxiliary_logit,
             "q_global": q.squeeze(1),
             "g_global": gate.squeeze(1),
+            "spectrum_weight": 1.0 - gate.squeeze(1),
+            "mechanism_weight": gate.squeeze(1),
+            "spectrum_expert_logit": spectrum_expert_logit,
+            "mechanism_expert_logit": mechanism_expert_logit,
             "mechanism_to_spectrum_norm_ratio": gated_phy.norm(dim=1) / z_spec.norm(dim=1).clamp_min(1e-8),
         }
 
@@ -150,6 +168,8 @@ def model_metadata(model: BearingDiagnosisModel) -> dict[str, Any]:
         "model_name": model.config.model_name,
         "machine_type": model.config.machine_type,
         "experiment": model.config.experiment,
+        "spectrum_representation": model.config.spectrum_representation,
+        "gated_fusion": model.config.gated_fusion,
         "config_hash": model.config.config_hash,
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "external_outputs": ["sample_id", "abnormal_probability", "component_probabilities"],

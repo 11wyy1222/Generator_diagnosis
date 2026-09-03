@@ -151,6 +151,10 @@ class PreprocessState:
     frequency_grid: FrequencyGrid
     rpm_min: float
     rpm_max: float
+    spectrum_representation: str = "frequency_hz_v1"
+    order_suppression_harmonics: tuple[float, ...] = (1.0, 2.0, 3.0)
+    order_suppression_half_width: float = 0.08
+    order_suppression_floor: float = 0.25
 
     def normalize_time(self, signal: np.ndarray) -> np.ndarray:
         if not math.isfinite(self.amplitude_p995) or self.amplitude_p995 <= 0:
@@ -160,6 +164,54 @@ class PreprocessState:
 
     def normalize_rpm(self, rpm: float) -> float:
         return float((rpm - self.rpm_min) / (self.rpm_max - self.rpm_min))
+
+    @property
+    def spectrum_channel_count(self) -> int:
+        return 4 if self.spectrum_representation == "shaft_order_v2" else 2
+
+    @property
+    def order_axis(self) -> np.ndarray:
+        """Frozen common order axis; derived only from RPM limits, never bearing orders."""
+        return self.frequency_grid.axis_hz / (self.rpm_max / 60.0)
+
+    def transform_spectrum(
+        self,
+        frequency: np.ndarray,
+        ordinary: np.ndarray,
+        envelope: np.ndarray,
+        rpm: float,
+    ) -> np.ndarray:
+        if self.spectrum_representation == "frequency_hz_v1":
+            return self.frequency_grid.transform(frequency, ordinary, envelope)
+        if self.spectrum_representation != "shaft_order_v2":
+            raise ValueError(f"unsupported spectrum representation: {self.spectrum_representation}")
+        if not math.isfinite(rpm) or rpm <= 0:
+            raise ValueError("positive finite RPM is required for shaft-order alignment")
+        shaft_hz = rpm / 60.0
+        native_order = np.asarray(frequency, dtype=np.float64) / shaft_hz
+        axis = self.order_axis
+        if native_order[-1] + self.frequency_grid.delta_f_hz / shaft_hz / 2 < axis[-1]:
+            raise ValueError("sample spectrum does not cover the frozen shaft-order grid")
+        raw = np.stack(
+            [
+                np.interp(axis, native_order, ordinary),
+                np.interp(axis, native_order, envelope),
+            ],
+            axis=0,
+        )
+        attenuation = np.ones_like(axis)
+        width = self.order_suppression_half_width
+        for harmonic in self.order_suppression_harmonics:
+            distance = np.abs(axis - harmonic)
+            local = np.where(
+                distance <= width,
+                self.order_suppression_floor
+                + (1.0 - self.order_suppression_floor) * distance / width,
+                1.0,
+            )
+            attenuation = np.minimum(attenuation, local)
+        suppressed = raw * attenuation[None, :]
+        return np.concatenate([raw, suppressed], axis=0).astype(np.float32)
 
 
 def fit_amplitude_p995(signals: Iterable[np.ndarray]) -> float:

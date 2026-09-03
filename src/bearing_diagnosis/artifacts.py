@@ -20,12 +20,23 @@ def save_preprocess_state(run_dir: str | Path, state: PreprocessState, scaler: M
         "amplitude_p995": state.amplitude_p995,
         "rpm_min": state.rpm_min,
         "rpm_max": state.rpm_max,
+        "spectrum_representation": state.spectrum_representation,
+        "order_suppression_harmonics": list(state.order_suppression_harmonics),
+        "order_suppression_half_width": state.order_suppression_half_width,
+        "order_suppression_floor": state.order_suppression_floor,
         "frequency_grid": {
             "f_max_hz": state.frequency_grid.f_max_hz,
             "delta_f_hz": state.frequency_grid.delta_f_hz,
             "frequency_bin_count": int(state.frequency_grid.axis_hz.size),
         },
     }
+    if state.spectrum_representation == "shaft_order_v2":
+        metadata["order_grid"] = {
+            "max_order": float(state.order_axis[-1]),
+            "delta_order": float(state.order_axis[1] - state.order_axis[0]),
+            "order_bin_count": int(state.order_axis.size),
+            "uses_theoretical_fault_orders": False,
+        }
     (output / "preprocess.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     (output / "frequency_grid_metadata.json").write_text(
         json.dumps(metadata["frequency_grid"], indent=2), encoding="utf-8"
@@ -39,7 +50,16 @@ def load_preprocess_state(run_dir: str | Path) -> tuple[PreprocessState, Mechani
     scaler_data = np.load(source / "mechanism_scaler.npz", allow_pickle=False)
     grid = FrequencyGrid(axis, metadata["frequency_grid"]["f_max_hz"], metadata["frequency_grid"]["delta_f_hz"])
     return (
-        PreprocessState(metadata["amplitude_p995"], grid, metadata["rpm_min"], metadata["rpm_max"]),
+        PreprocessState(
+            metadata["amplitude_p995"],
+            grid,
+            metadata["rpm_min"],
+            metadata["rpm_max"],
+            metadata.get("spectrum_representation", "frequency_hz_v1"),
+            tuple(metadata.get("order_suppression_harmonics", (1.0, 2.0, 3.0))),
+            metadata.get("order_suppression_half_width", 0.08),
+            metadata.get("order_suppression_floor", 0.25),
+        ),
         MechanismScaler(scaler_data["center"], scaler_data["scale"]),
     )
 
@@ -49,6 +69,8 @@ def write_model_card(run_dir: str | Path, config: ModelConfig, threshold: float,
 
 - Machine type: `{config.machine_type}`
 - Experiment: `{config.experiment}`
+- Spectrum representation: `{config.spectrum_representation}`
+- Gated fusion: `{config.gated_fusion}`
 - Configuration SHA-256: `{config.config_hash}`
 - Evaluation threshold: `{threshold:.8g}` (chosen for maximum validation F1)
 - Component classification heads: disabled
@@ -86,7 +108,8 @@ def write_prediction_parquet(run_dir: str | Path, predictions: list[dict[str, ob
     external_columns = ("sample_id", "target", "abnormal_probability")
     gate_columns = (
         "sample_id", "mechanism_aux_probability", "q_global", "g_global",
-        "mechanism_to_spectrum_norm_ratio",
+        "spectrum_weight", "mechanism_weight", "spectrum_expert_probability",
+        "mechanism_expert_probability", "mechanism_to_spectrum_norm_ratio",
     )
     external = [{key: row[key] for key in external_columns} for row in predictions]
     gates = [{key: row[key] for key in gate_columns} for row in predictions]

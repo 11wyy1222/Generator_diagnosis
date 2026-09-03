@@ -10,7 +10,13 @@ import pytest
 from bearing_diagnosis.config import ModelConfig
 from bearing_diagnosis.evaluation import select_f1_threshold
 from bearing_diagnosis.mechanism import FEATURE_COUNT, extract_mechanism_features
-from bearing_diagnosis.preprocessing import FrequencyGrid, load_waveform, native_spectra, validate_waveform
+from bearing_diagnosis.preprocessing import (
+    FrequencyGrid,
+    PreprocessState,
+    load_waveform,
+    native_spectra,
+    validate_waveform,
+)
 from bearing_diagnosis.schemas import SampleRecord, parse_waveform_filename
 from bearing_diagnosis.splitting import assert_no_group_leakage, split_development_records
 from bearing_diagnosis.training import checkpoint_improved, update_convergence_count
@@ -119,6 +125,39 @@ def test_frequency_grid_and_mechanism_shapes() -> None:
     assert 0 <= evidence.q_global <= 1
 
 
+def test_v2_order_grid_aligns_equal_orders_without_fault_order_parameters() -> None:
+    fs, length = 2048.0, 4096
+    grid = FrequencyGrid.fit([(fs, length)], 500.0)
+    state = PreprocessState(
+        1.0, grid, 180.0, 360.0, "shaft_order_v2", (1.0, 2.0, 3.0), 0.08, 0.25
+    )
+    peaks: list[float] = []
+    for rpm in (240.0, 300.0):
+        time = np.arange(length) / fs
+        signal = np.sin(2 * np.pi * (rpm / 60.0) * 7.5 * time)
+        frequency, ordinary, envelope = native_spectra(signal, fs)
+        transformed = state.transform_spectrum(frequency, ordinary, envelope, rpm)
+        assert transformed.shape == (4, grid.axis_hz.size)
+        peaks.append(float(state.order_axis[np.argmax(transformed[0])]))
+    assert peaks[0] == pytest.approx(7.5, abs=0.15)
+    assert peaks[1] == pytest.approx(7.5, abs=0.15)
+
+
+def test_v2_soft_suppression_preserves_raw_channels_and_attenuates_shaft_harmonics() -> None:
+    fs, length, rpm = 2048.0, 4096, 300.0
+    grid = FrequencyGrid.fit([(fs, length)], 500.0)
+    state = PreprocessState(
+        1.0, grid, 180.0, 350.0, "shaft_order_v2", (1.0, 2.0, 3.0), 0.08, 0.25
+    )
+    time = np.arange(length) / fs
+    signal = np.sin(2 * np.pi * (rpm / 60.0) * time)
+    frequency, ordinary, envelope = native_spectra(signal, fs)
+    transformed = state.transform_spectrum(frequency, ordinary, envelope, rpm)
+    shaft_bin = int(np.argmin(np.abs(state.order_axis - 1.0)))
+    assert transformed[2, shaft_bin] < transformed[0, shaft_bin]
+    assert transformed[3, shaft_bin] <= transformed[1, shaft_bin]
+
+
 def test_waveform_admission_rejects_constant() -> None:
     assert "constant_or_fill_value" in validate_waveform(np.ones(128))
 
@@ -158,6 +197,22 @@ def test_all_ablation_models_forward_and_zero_reliability_degrades() -> None:
         assert details["main_loss"] >= 0
         if experiment == "gated":
             assert output["g_global"][0].item() == 0.0
+
+    v2_inputs = dict(inputs)
+    v2_inputs["spectrum"] = torch.rand(batch, 4, bins)
+    v2 = BearingDiagnosisModel(
+        ModelConfig(
+            "test-v2",
+            "semi_direct",
+            time_pool_segments=2,
+            spectrum_pool_segments=2,
+            spectrum_representation="shaft_order_v2",
+            gated_fusion="competitive_v2",
+        )
+    )
+    output = v2(**v2_inputs)
+    assert torch.allclose(output["spectrum_weight"] + output["mechanism_weight"], torch.ones(batch))
+    assert output["mechanism_weight"][0].item() == 0.0
 
 
 def test_balanced_sampler_keeps_length_and_label_balance() -> None:
@@ -242,6 +297,7 @@ def test_one_epoch_training_and_inference_artifacts(tmp_path: Path) -> None:
         "smoke", "semi_direct", max_epochs=1, early_stopping_patience=1,
         batch_size=4, time_pool_segments=2, spectrum_pool_segments=2,
         business_f_max_hz=500.0,
+        spectrum_representation="shaft_order_v2", gated_fusion="competitive_v2",
     )
     run_dir = tmp_path / "run"
     result = train_one_run(
@@ -267,6 +323,7 @@ def test_one_epoch_training_and_inference_artifacts(tmp_path: Path) -> None:
     assert external["component_probabilities"] is None
     assert 0 <= external["abnormal_probability"] <= 1
     assert "g_global" in internal
+    assert internal["spectrum_weight"] + internal["mechanism_weight"] == pytest.approx(1.0)
 
     from bearing_diagnosis.testing import test_one_run
 

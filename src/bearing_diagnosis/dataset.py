@@ -77,7 +77,7 @@ class BearingDataset(Dataset):
         if reasons:
             raise ValueError(f"rejected waveform {record.sample_id}: {', '.join(reasons)}")
         frequency, ordinary, envelope = native_spectra(signal, record.sampling_rate_hz)
-        spectrum = self.preprocess.frequency_grid.transform(frequency, ordinary, envelope)
+        spectrum = self.preprocess.transform_spectrum(frequency, ordinary, envelope, record.rpm)
         if record.component_orders is None:
             if not self.allow_missing_mechanism:
                 raise ValueError(

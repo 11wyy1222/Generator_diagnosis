@@ -138,6 +138,14 @@ def evaluate(
                     "mechanism_aux_probability": float(auxiliary[index]),
                     "q_global": float(output["q_global"][index].cpu()),
                     "g_global": float(output["g_global"][index].cpu()),
+                    "spectrum_weight": float(output["spectrum_weight"][index].cpu()),
+                    "mechanism_weight": float(output["mechanism_weight"][index].cpu()),
+                    "spectrum_expert_probability": float(
+                        torch.sigmoid(output["spectrum_expert_logit"])[index].cpu()
+                    ),
+                    "mechanism_expert_probability": float(
+                        torch.sigmoid(output["mechanism_expert_logit"])[index].cpu()
+                    ),
                     "mechanism_to_spectrum_norm_ratio": float(
                         output["mechanism_to_spectrum_norm_ratio"][index].cpu()
                     ),
@@ -172,7 +180,16 @@ def fit_preprocessing(train_records: list[SampleRecord], config: ModelConfig) ->
         config.business_f_max_hz,
         max_theoretical,
     )
-    state = PreprocessState(p995, grid, config.rpm_min, config.rpm_max)
+    state = PreprocessState(
+        p995,
+        grid,
+        config.rpm_min,
+        config.rpm_max,
+        config.spectrum_representation,
+        config.order_suppression_harmonics,
+        config.order_suppression_half_width,
+        config.order_suppression_floor,
+    )
     features, masks = collect_raw_mechanism_features(train_records, state)
     return state, MechanismScaler.fit(features, masks)
 

@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 Experiment = Literal["spectrum_only", "mechanism_only", "concat", "gated"]
+SpectrumRepresentation = Literal["frequency_hz_v1", "shaft_order_v2"]
+GatedFusion = Literal["spectrum_residual_v1", "competitive_v2"]
 
 
 @dataclass(frozen=True)
@@ -31,6 +33,11 @@ class ModelConfig:
     time_pool_segments: int = 8
     spectrum_pool_segments: int = 8
     dropout: float = 0.2
+    spectrum_representation: SpectrumRepresentation = "frequency_hz_v1"
+    gated_fusion: GatedFusion = "spectrum_residual_v1"
+    order_suppression_harmonics: tuple[float, ...] = (1.0, 2.0, 3.0)
+    order_suppression_half_width: float = 0.08
+    order_suppression_floor: float = 0.25
 
     def __post_init__(self) -> None:
         if self.rpm_max <= self.rpm_min:
@@ -43,6 +50,18 @@ class ModelConfig:
             raise ValueError("batch_size and max_epochs must be positive")
         if self.convergence_val_loss < 0 or self.convergence_epochs < 1:
             raise ValueError("convergence_val_loss must be non-negative and convergence_epochs positive")
+        if self.spectrum_representation not in {"frequency_hz_v1", "shaft_order_v2"}:
+            raise ValueError(f"unsupported spectrum_representation: {self.spectrum_representation}")
+        if self.gated_fusion not in {"spectrum_residual_v1", "competitive_v2"}:
+            raise ValueError(f"unsupported gated_fusion: {self.gated_fusion}")
+        if self.gated_fusion == "competitive_v2" and self.spectrum_representation != "shaft_order_v2":
+            raise ValueError("competitive_v2 requires shaft_order_v2 spectrum representation")
+        if not self.order_suppression_harmonics or any(value <= 0 for value in self.order_suppression_harmonics):
+            raise ValueError("order_suppression_harmonics must contain positive orders")
+        if self.order_suppression_half_width <= 0:
+            raise ValueError("order_suppression_half_width must be positive")
+        if not 0.0 <= self.order_suppression_floor <= 1.0:
+            raise ValueError("order_suppression_floor must be in [0, 1]")
 
     @property
     def config_hash(self) -> str:
@@ -59,4 +78,8 @@ def load_config(path: str | Path) -> ModelConfig:
         raw: dict[str, Any] = yaml.safe_load(handle)
     if "random_seeds" in raw:
         raw["random_seeds"] = tuple(int(seed) for seed in raw["random_seeds"])
+    if "order_suppression_harmonics" in raw:
+        raw["order_suppression_harmonics"] = tuple(
+            float(value) for value in raw["order_suppression_harmonics"]
+        )
     return ModelConfig(**raw)

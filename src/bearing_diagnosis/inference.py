@@ -47,7 +47,7 @@ class BearingInference:
         if reasons:
             raise ValueError(f"rejected waveform {item.sample_id}: {', '.join(reasons)}")
         frequency, ordinary, envelope = native_spectra(signal, item.sampling_rate_hz)
-        spectrum = self.preprocess.frequency_grid.transform(frequency, ordinary, envelope)
+        spectrum = self.preprocess.transform_spectrum(frequency, ordinary, envelope, item.rpm)
         evidence = extract_mechanism_features(
             frequency, ordinary, envelope, item.rpm, item.component_orders,
             item.sampling_rate_hz, signal.size,
@@ -76,10 +76,17 @@ class BearingInference:
             "fft_resolution_hz": item.sampling_rate_hz / signal.size,
             "q_global": evidence.q_global,
             "g_global": float(outputs["g_global"][0].cpu()),
+            "spectrum_weight": float(outputs["spectrum_weight"][0].cpu()),
+            "mechanism_weight": float(outputs["mechanism_weight"][0].cpu()),
+            "spectrum_expert_probability": float(
+                torch.sigmoid(outputs["spectrum_expert_logit"])[0].cpu()
+            ),
+            "mechanism_expert_probability": float(
+                torch.sigmoid(outputs["mechanism_expert_logit"])[0].cpu()
+            ),
             "mechanism_aux_probability": float(torch.sigmoid(outputs["mechanism_aux_logit"])[0].cpu()),
             "mechanism_to_spectrum_norm_ratio": float(outputs["mechanism_to_spectrum_norm_ratio"][0].cpu()),
             "degraded_to_spectrum_only": evidence.q_global == 0.0,
             "theoretical_frequencies_hz": evidence.theoretical_frequencies_hz,
         }
         return external, internal
-
