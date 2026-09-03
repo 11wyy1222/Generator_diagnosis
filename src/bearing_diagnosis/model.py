@@ -88,8 +88,18 @@ class BearingDiagnosisModel(nn.Module):
         self.gated_head = mlp([128, 64, 32, 1], config.dropout, final_activation=False)
 
     def encode_spectrum(self, waveform: torch.Tensor, spectrum: torch.Tensor, rpm: torch.Tensor) -> torch.Tensor:
-        z_raw = self.time_encoder(waveform)
-        z_spectrum = self.spectrum_encoder(spectrum)
+        if self.training and self.config.spectrum_representation == "shaft_order_v2":
+            # Long 131072-point waveforms exceed a 6 GiB GPU at the frozen v1
+            # batch size without activation recomputation.  Checkpointing changes
+            # memory/runtime only; model parameters, outputs and effective batch
+            # remain identical.
+            from torch.utils.checkpoint import checkpoint
+
+            z_raw = checkpoint(self.time_encoder, waveform, use_reentrant=False)
+            z_spectrum = checkpoint(self.spectrum_encoder, spectrum, use_reentrant=False)
+        else:
+            z_raw = self.time_encoder(waveform)
+            z_spectrum = self.spectrum_encoder(spectrum)
         return self.spectrum_fusion(torch.cat([z_raw, z_spectrum, rpm.reshape(-1, 1)], dim=1))
 
     def encode_mechanism(self, features: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:

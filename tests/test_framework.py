@@ -211,6 +211,7 @@ def test_all_ablation_models_forward_and_zero_reliability_degrades() -> None:
         )
     )
     output = v2(**v2_inputs)
+    output["abnormal_logit"].sum().backward()
     assert torch.allclose(output["spectrum_weight"] + output["mechanism_weight"], torch.ones(batch))
     assert output["mechanism_weight"][0].item() == 0.0
 
