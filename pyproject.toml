@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "generator-bearing-diagnosis"
+version = "0.1.0"
+description = "Weakly supervised generator bearing fault diagnosis"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.1,<3",
+  "scipy>=1.14,<2",
+  "pyarrow>=17,<23",
+  "torch>=2.5,<3",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9"]
+
+[project.scripts]
+bearing-diagnosis = "bearing_diagnosis.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

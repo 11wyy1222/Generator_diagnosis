@@ -1,0 +1,15 @@
+{
+  "SD_TEST_13": {
+    "machine_type": "semi_direct",
+    "role": "cross_turbine_test",
+    "rpm_range": [180.0, 350.0],
+    "component_orders": {
+      "rolling_element": 5.3364,
+      "cage": 0.4536,
+      "outer_race": 12.6996,
+      "inner_race": 15.3004
+    },
+    "abnormal_range": ["2023-01-03 00:00:00", "2024-01-05 06:39:15"],
+    "normal_range": ["2024-01-28 03:01:42", "2024-02-28 03:01:42"]
+  }
+}

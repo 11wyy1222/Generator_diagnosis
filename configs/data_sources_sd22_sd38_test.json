@@ -1,0 +1,40 @@
+{
+  "rpm_bins": {
+    "semi_direct": {"minimum": 180.0, "maximum": 350.0, "width": 20.0},
+    "dfig_development": {"minimum": 600.0, "maximum": 1200.0, "width": 100.0},
+    "dfig_f14": {"minimum": 1000.0, "maximum": 1900.0, "width": 100.0, "in_range_maximum": 1200.0}
+  },
+  "objects": {
+    "SD_NEW_22": {
+      "project_id": "S1-20180011",
+      "turbine_id": "22",
+      "fault_event_id": null,
+      "known_fault_component": null,
+      "directories": [
+        {
+          "name": "沙扒-22-发电机12点径向正常",
+          "sensor_position": "12点",
+          "label": "confirmed_normal"
+        },
+        {
+          "name": "沙扒-22-发电机6点径向正常",
+          "sensor_position": "6点",
+          "label": "confirmed_normal"
+        }
+      ]
+    },
+    "SD_NEW_38": {
+      "project_id": "S1-20180011",
+      "turbine_id": "38",
+      "fault_event_id": "SD_DEV_38_event_001",
+      "known_fault_component": "非驱动端轴承外环",
+      "full_abnormal_range": ["2023-01-01", "2025-09-15 23:59:59"],
+      "directories": [
+        {"name": "沙扒-38-发电机12点径向", "sensor_position": "12点", "label": "abnormal", "require_position": false},
+        {"name": "沙扒-38-发电机3点径向", "sensor_position": "3点", "label": "abnormal", "require_position": false},
+        {"name": "沙扒-38-发电机6点径向", "sensor_position": "6点", "label": "abnormal", "require_position": false},
+        {"name": "沙扒-38-发电机9点径向", "sensor_position": "9点", "label": "abnormal", "require_position": false}
+      ]
+    }
+  }
+}

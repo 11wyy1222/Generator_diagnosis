@@ -1,0 +1,20 @@
+model_name: weak_cls_semi_direct_spectrum_only_v1
+machine_type: semi_direct
+experiment: spectrum_only
+rpm_min: 180.0
+rpm_max: 350.0
+business_f_max_hz: 5000.0
+split_seed: 2026
+random_seeds: [2026, 2027, 2028]
+batch_size: 32
+max_epochs: 100
+early_stopping_patience: 15
+convergence_val_loss: 0.01
+convergence_epochs: 3
+learning_rate: 0.001
+weight_decay: 0.0001
+gradient_clip_norm: 5.0
+mechanism_aux_weight: 0.10
+time_pool_segments: 8
+spectrum_pool_segments: 8
+dropout: 0.2

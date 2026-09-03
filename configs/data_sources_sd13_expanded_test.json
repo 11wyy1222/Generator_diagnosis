@@ -1,0 +1,27 @@
+{
+  "rpm_bins": {
+    "semi_direct": {"minimum": 180.0, "maximum": 350.0, "width": 20.0},
+    "dfig_development": {"minimum": 600.0, "maximum": 1200.0, "width": 100.0},
+    "dfig_f14": {
+      "minimum": 1000.0,
+      "maximum": 1900.0,
+      "width": 100.0,
+      "in_range_maximum": 1200.0
+    }
+  },
+  "objects": {
+    "SD_TEST_13": {
+      "project_id": "S1-20180011",
+      "turbine_id": "13",
+      "fault_event_id": "SD_TEST_13_event_001_expanded",
+      "known_fault_component": "非驱动端轴承外环",
+      "full_abnormal_range": ["2023-01-03", "2024-01-05 06:39:15"],
+      "directories": [
+        {"name": "沙扒-13-发电机12点", "sensor_position": "12点"},
+        {"name": "沙扒-13-发电机3点", "sensor_position": "3点"},
+        {"name": "沙扒-13-发电机6点", "sensor_position": "6点"},
+        {"name": "沙扒-13-发电机9点", "sensor_position": "9点"}
+      ]
+    }
+  }
+}

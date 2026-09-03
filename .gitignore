@@ -1,0 +1,40 @@
+# Python environments and caches
+.venv/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE and local tooling
+.idea/
+.vscode/
+.tmp/
+.tools/
+
+# Generated datasets and immutable local data snapshots
+dataset_root/
+dataset_root_*/
+
+# The anomaly-detection workspace is intentionally maintained separately.
+bearing_anomaly_workspace/
+
+# Training/test artifacts can contain large checkpoints and machine-local paths.
+runs/**
+!runs/*.md
+
+# Model and array artifacts outside runs
+*.pt
+*.pth
+*.ckpt
+*.npy
+*.npz
+*.parquet
+
+# Local logs and transient command artifacts
+*.log
+--run-dir
+
+# OS metadata
+Thumbs.db
+.DS_Store

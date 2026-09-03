@@ -1,0 +1,30 @@
+{
+  "rpm_bins": {
+    "semi_direct": {"minimum": 180.0, "maximum": 350.0, "width": 20.0},
+    "dfig_development": {"minimum": 600.0, "maximum": 1200.0, "width": 100.0},
+    "dfig_f14": {"minimum": 1000.0, "maximum": 1900.0, "width": 100.0, "in_range_maximum": 1200.0}
+  },
+  "objects": {
+    "DFIG_DEV_41": {
+      "project_id": "S1-20220088",
+      "turbine_id": "41",
+      "fault_event_id": "DFIG_DEV_41_event_001_expanded",
+      "known_fault_component": "非驱动端轴承外环",
+      "full_abnormal_range": ["2024-01-03", "2026-05-15 05:36:00"],
+      "directories": [
+        {"name": "半岛南-41-发电机自由端", "sensor_position": "非驱动端", "source_sensor_position": "自由端9V"}
+      ]
+    },
+    "DFIG_TEST_F14": {
+      "project_id": "S1-20230840",
+      "turbine_id": "F14",
+      "source_turbine_id": "FJ14",
+      "fault_event_id": "DFIG_TEST_F14_event_001_expanded",
+      "known_fault_component": "驱动端轴承内环",
+      "full_abnormal_range": ["2026-03-25 18:30:45", "2026-07-26 08:49:15"],
+      "directories": [
+        {"name": "武威-14-发电机驱动端", "sensor_position": "驱动端", "source_sensor_position": "驱动端径向"}
+      ]
+    }
+  }
+}

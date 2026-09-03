@@ -1,0 +1,30 @@
+{
+  "SD_NEW_22": {
+    "machine_type": "semi_direct",
+    "role": "new_turbine_test",
+    "rpm_range": [180.0, 350.0],
+    "component_orders": {
+      "rolling_element": 5.3364,
+      "cage": 0.4536,
+      "outer_race": 12.6996,
+      "inner_race": 15.3004
+    },
+    "abnormal_range": null,
+    "normal_range": null,
+    "mechanism_status": "confirmed_same_as_SD_NEW_38_NU10_560M"
+  },
+  "SD_NEW_38": {
+    "machine_type": "semi_direct",
+    "role": "new_turbine_test",
+    "rpm_range": [180.0, 350.0],
+    "component_orders": {
+      "rolling_element": 5.3364,
+      "cage": 0.4536,
+      "outer_race": 12.6996,
+      "inner_race": 15.3004
+    },
+    "abnormal_range": ["2023-01-01 00:00:00", "2025-09-15 23:59:59"],
+    "normal_range": null,
+    "mechanism_status": "confirmed_NU10_560M"
+  }
+}
