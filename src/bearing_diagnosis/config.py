@@ -20,6 +20,7 @@ class ModelConfig:
     split_seed: int = 2026
     random_seeds: tuple[int, ...] = (2026, 2027, 2028)
     batch_size: int = 32
+    gradient_accumulation_steps: int = 1
     max_epochs: int = 100
     early_stopping_patience: int = 15
     convergence_val_loss: float = 0.01
@@ -39,8 +40,10 @@ class ModelConfig:
             raise ValueError(f"unsupported experiment: {self.experiment}")
         if self.machine_type not in {"semi_direct", "dfig"}:
             raise ValueError(f"unsupported machine_type: {self.machine_type}")
-        if self.batch_size < 1 or self.max_epochs < 1:
-            raise ValueError("batch_size and max_epochs must be positive")
+        if self.batch_size < 1 or self.gradient_accumulation_steps < 1 or self.max_epochs < 1:
+            raise ValueError(
+                "batch_size, gradient_accumulation_steps and max_epochs must be positive"
+            )
         if self.convergence_val_loss < 0 or self.convergence_epochs < 1:
             raise ValueError("convergence_val_loss must be non-negative and convergence_epochs positive")
 

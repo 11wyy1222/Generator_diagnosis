@@ -169,12 +169,16 @@ def test_training_sampler_covers_every_record_with_fixed_batches_and_steps() -> 
         replace(item, waveform_length=1024 if index < 5 else 2048)
         for index, item in enumerate(records)
     ]
-    sampler = FullCoverageBatchSampler(records, batch_size=4, seed=2026)
-    expected_steps = len(sampler)
+    sampler = FullCoverageBatchSampler(
+        records, batch_size=4, seed=2026, gradient_accumulation_steps=2
+    )
+    expected_micro_batches = len(sampler)
     for epoch in (0, 1, 2):
         sampler.set_epoch(epoch)
         batches = list(sampler)
-        assert len(batches) == expected_steps == 4
+        assert len(batches) == expected_micro_batches == sampler.micro_batch_count == 4
+        assert sampler.optimization_steps == 2
+        assert sampler.effective_batch_size == 8
         assert all(len(batch) == 4 for batch in batches)
         real_indices = [
             item for batch in batches for item in batch if isinstance(item, int)
@@ -215,25 +219,75 @@ def test_group_class_weights_equalize_classes_and_groups_without_downsampling() 
     assert group_mass[(True, "abnormal-a")] == pytest.approx(group_mass[(True, "abnormal-b")])
 
 
-def test_zero_weight_padding_does_not_change_weighted_loss() -> None:
+def test_weighted_training_loss_uses_batch_mean_without_weight_sum_normalization() -> None:
+    torch = pytest.importorskip("torch")
+    from torch.nn import functional as F
+    from bearing_diagnosis.model import weak_supervision_loss
+
+    outputs = {
+        "abnormal_logit": torch.tensor([-1.0, 2.0, 0.5]),
+        "mechanism_aux_logit": torch.tensor([-0.5, 1.5, -0.25]),
+        "q_global": torch.tensor([1.0, 0.5, 0.0]),
+    }
+    targets = torch.tensor([0.0, 1.0, 1.0])
+    weights = torch.tensor([2.0, 0.5, 0.0])
+    loss, details = weak_supervision_loss(
+        outputs, targets, auxiliary_weight=0.1, sample_weights=weights
+    )
+    expected_main = (F.binary_cross_entropy_with_logits(
+        outputs["abnormal_logit"], targets, reduction="none"
+    ) * weights).mean()
+    expected_aux = (F.binary_cross_entropy_with_logits(
+        outputs["mechanism_aux_logit"], targets, reduction="none"
+    ) * weights * outputs["q_global"]).mean()
+    assert details["main_loss"] == pytest.approx(float(expected_main))
+    assert details["auxiliary_loss"] == pytest.approx(float(expected_aux))
+    assert loss == pytest.approx(float(expected_main + 0.1 * expected_aux))
+
+
+def test_unweighted_validation_loss_keeps_historical_behavior() -> None:
+    torch = pytest.importorskip("torch")
+    from torch.nn import functional as F
+    from bearing_diagnosis.model import weak_supervision_loss
+
+    outputs = {
+        "abnormal_logit": torch.tensor([-1.0, 2.0, 0.5]),
+        "mechanism_aux_logit": torch.tensor([-0.5, 1.5, -0.25]),
+        "q_global": torch.tensor([1.0, 0.5, 0.0]),
+    }
+    targets = torch.tensor([0.0, 1.0, 1.0])
+    loss, details = weak_supervision_loss(outputs, targets, auxiliary_weight=0.1)
+    expected_main = F.binary_cross_entropy_with_logits(outputs["abnormal_logit"], targets)
+    per_aux = F.binary_cross_entropy_with_logits(
+        outputs["mechanism_aux_logit"], targets, reduction="none"
+    )
+    expected_aux = (per_aux * outputs["q_global"]).sum() / outputs["q_global"].sum()
+    assert details["main_loss"] == pytest.approx(float(expected_main))
+    assert details["auxiliary_loss"] == pytest.approx(float(expected_aux))
+    assert loss == pytest.approx(float(expected_main + 0.1 * expected_aux))
+
+
+def test_zero_weight_padding_contributes_zero_before_fixed_batch_mean() -> None:
     torch = pytest.importorskip("torch")
     from bearing_diagnosis.model import weak_supervision_loss
 
-    base = {
-        "abnormal_logit": torch.tensor([-1.0, 2.0]),
-        "mechanism_aux_logit": torch.tensor([-0.5, 1.5]),
-        "q_global": torch.tensor([1.0, 1.0]),
+    outputs = {
+        "abnormal_logit": torch.tensor([-1.0, 2.0, 100.0, -100.0]),
+        "mechanism_aux_logit": torch.tensor([-0.5, 1.5, 100.0, -100.0]),
+        "q_global": torch.ones(4),
     }
-    base_loss, _ = weak_supervision_loss(
-        base, torch.tensor([0.0, 1.0]), sample_weights=torch.tensor([1.0, 1.0])
+    loss, _ = weak_supervision_loss(
+        outputs,
+        torch.tensor([0.0, 1.0, 0.0, 1.0]),
+        sample_weights=torch.tensor([1.0, 1.0, 0.0, 0.0]),
     )
-    padded = {key: torch.cat([value, value[:1]]) for key, value in base.items()}
-    padded_loss, _ = weak_supervision_loss(
-        padded,
-        torch.tensor([0.0, 1.0, 0.0]),
-        sample_weights=torch.tensor([1.0, 1.0, 0.0]),
+    real_outputs = {key: value[:2] for key, value in outputs.items()}
+    real_loss, _ = weak_supervision_loss(
+        real_outputs,
+        torch.tensor([0.0, 1.0]),
+        sample_weights=torch.ones(2),
     )
-    assert padded_loss == pytest.approx(base_loss)
+    assert loss == pytest.approx(float(real_loss) * 0.5)
 
 
 def test_evaluation_sampler_never_mixes_lengths() -> None:
@@ -276,7 +330,8 @@ def test_one_epoch_training_and_inference_artifacts(tmp_path: Path) -> None:
                 )
     config = ModelConfig(
         "smoke", "semi_direct", max_epochs=1, early_stopping_patience=1,
-        batch_size=4, time_pool_segments=2, spectrum_pool_segments=2,
+        batch_size=4, gradient_accumulation_steps=2,
+        time_pool_segments=2, spectrum_pool_segments=2,
         business_f_max_hz=500.0,
     )
     run_dir = tmp_path / "run"
@@ -288,6 +343,15 @@ def test_one_epoch_training_and_inference_artifacts(tmp_path: Path) -> None:
         device_name="cpu",
     )
     assert 0 <= result["threshold"] <= 1
+    sampling = __import__("json").loads(
+        (run_dir / "training_sampling.json").read_text(encoding="utf-8")
+    )
+    assert sampling["micro_batch_size"] == 4
+    assert sampling["gradient_accumulation_steps"] == 2
+    assert sampling["effective_batch_size"] == 8
+    assert sampling["micro_batches_per_epoch"] == 2
+    assert sampling["optimization_steps_per_epoch"] == 1
+    assert sampling["zero_weight_padding_per_epoch"] == 0
     for name in (
         "model.pt", "preprocess.json", "frequency_grid.npy", "predictions_validation.parquet",
         "model_best_during_training.pt", "gate_monitoring.parquet", "metrics_validation.json",

@@ -138,6 +138,7 @@ def weak_supervision_loss(
     sample_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     targets = targets.float().reshape(-1)
+    weighted_training = sample_weights is not None
     weights = (
         torch.ones_like(targets)
         if sample_weights is None
@@ -145,19 +146,22 @@ def weak_supervision_loss(
     )
     if weights.shape != targets.shape or torch.any(weights < 0) or not torch.isfinite(weights).all():
         raise ValueError("sample_weights must be finite, non-negative and match targets")
-    denominator = weights.sum().clamp_min(torch.finfo(weights.dtype).eps)
     per_sample_main = nn.functional.binary_cross_entropy_with_logits(
         outputs["abnormal_logit"], targets, reduction="none"
     )
-    main = (per_sample_main * weights).sum() / denominator
     per_sample_aux = nn.functional.binary_cross_entropy_with_logits(
         outputs["mechanism_aux_logit"], targets, reduction="none"
     )
     q = outputs["q_global"].reshape(-1)
-    auxiliary_weights = weights * q
-    auxiliary = (per_sample_aux * auxiliary_weights).sum() / auxiliary_weights.sum().clamp_min(
-        torch.finfo(weights.dtype).eps
-    )
+    if weighted_training:
+        main = (per_sample_main * weights).mean()
+        auxiliary = (per_sample_aux * weights * q).mean()
+    else:
+        # Preserve the historical unweighted validation/test loss semantics.
+        main = per_sample_main.mean()
+        auxiliary = (per_sample_aux * q).sum() / q.sum().clamp_min(
+            torch.finfo(q.dtype).eps
+        )
     total = main + float(auxiliary_weight) * auxiliary
     return total, {"main_loss": float(main.detach()), "auxiliary_loss": float(auxiliary.detach())}
 

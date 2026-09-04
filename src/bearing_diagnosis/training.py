@@ -238,9 +238,14 @@ def train_one_run(
         train_records, preprocess, scaler, sample_weights=training_weights
     )
     validation_dataset = BearingDataset(validation_records, preprocess, scaler)
-    train_sampler = FullCoverageBatchSampler(train_records, config.batch_size, seed)
+    train_sampler = FullCoverageBatchSampler(
+        train_records, config.batch_size, seed, config.gradient_accumulation_steps
+    )
     print(
-        f"[sampling] full_coverage={len(train_records)} batch_size={config.batch_size} "
+        f"[sampling] full_coverage={len(train_records)} micro_batch_size={config.batch_size} "
+        f"gradient_accumulation_steps={config.gradient_accumulation_steps} "
+        f"effective_batch_size={train_sampler.effective_batch_size} "
+        f"micro_batches={train_sampler.micro_batch_count} "
         f"optimization_steps={train_sampler.optimization_steps} "
         f"zero_weight_padding={train_sampler.padding_count}",
         flush=True,
@@ -250,7 +255,10 @@ def train_one_run(
             {
                 "strategy": "full_coverage_group_class_weighted",
                 "training_sample_count": len(train_records),
-                "batch_size": config.batch_size,
+                "micro_batch_size": config.batch_size,
+                "gradient_accumulation_steps": config.gradient_accumulation_steps,
+                "effective_batch_size": train_sampler.effective_batch_size,
+                "micro_batches_per_epoch": train_sampler.micro_batch_count,
                 "optimization_steps_per_epoch": train_sampler.optimization_steps,
                 "zero_weight_padding_per_epoch": train_sampler.padding_count,
                 "loss_weight_min": float(training_weights.min()),
@@ -284,9 +292,10 @@ def train_one_run(
         train_sampler.set_epoch(epoch)
         model.train()
         total_loss = 0.0
-        batches = 0
-        for batch in train_loader:
-            optimizer.zero_grad(set_to_none=True)
+        micro_batches = 0
+        optimizer_steps = 0
+        optimizer.zero_grad(set_to_none=True)
+        for micro_batch_index, batch in enumerate(train_loader, start=1):
             outputs = model(**_model_inputs(batch, device))
             loss, _ = weak_supervision_loss(
                 outputs,
@@ -294,11 +303,18 @@ def train_one_run(
                 config.mechanism_aux_weight,
                 batch["loss_weight"].to(device),
             )
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip_norm)
-            optimizer.step()
+            (loss / config.gradient_accumulation_steps).backward()
+            if micro_batch_index % config.gradient_accumulation_steps == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip_norm)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_steps += 1
             total_loss += float(loss.detach())
-            batches += 1
+            micro_batches += 1
+        if micro_batches % config.gradient_accumulation_steps != 0:
+            raise RuntimeError("sampler produced an incomplete gradient accumulation group")
+        if optimizer_steps != train_sampler.optimization_steps:
+            raise RuntimeError("optimizer step count does not match the frozen sampling plan")
         validation_predictions, validation_loss = evaluate(
             model, validation_loader, device, config.mechanism_aux_weight
         )
@@ -307,7 +323,7 @@ def train_one_run(
         threshold = select_f1_threshold(targets, probabilities)
         metrics = binary_metrics(targets, probabilities, threshold)
         current = float(metrics["pr_auc_range_label"])
-        train_loss = total_loss / max(batches, 1)
+        train_loss = total_loss / max(micro_batches, 1)
         convergence_count = update_convergence_count(
             validation_loss,
             config.convergence_val_loss,
@@ -321,7 +337,9 @@ def train_one_run(
             "validation_f1": float(metrics["f1"]),
             "threshold": threshold,
             "convergence_count": convergence_count,
-            "optimization_steps": train_sampler.optimization_steps,
+            "micro_batches": micro_batches,
+            "gradient_accumulation_steps": config.gradient_accumulation_steps,
+            "optimization_steps": optimizer_steps,
             "training_samples_covered": len(train_records),
         })
         if checkpoint_improved(

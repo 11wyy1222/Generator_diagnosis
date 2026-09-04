@@ -194,15 +194,23 @@ def group_class_loss_weights(records: Sequence[SampleRecord]) -> np.ndarray:
 
 
 class FullCoverageBatchSampler(Sampler[list[int | tuple[int, float]]]):
-    """Use every record once per epoch and zero-weight only the fixed-batch padding."""
+    """Cover every record once and align micro batches to optimizer steps."""
 
-    def __init__(self, records: Sequence[SampleRecord], batch_size: int, seed: int = 2026) -> None:
-        if batch_size < 1:
-            raise ValueError("batch_size must be positive")
+    def __init__(
+        self,
+        records: Sequence[SampleRecord],
+        batch_size: int,
+        seed: int = 2026,
+        gradient_accumulation_steps: int = 1,
+    ) -> None:
+        if batch_size < 1 or gradient_accumulation_steps < 1:
+            raise ValueError("batch_size and gradient_accumulation_steps must be positive")
         if not records:
             raise ValueError("training records are required")
         self.records = list(records)
         self.batch_size = batch_size
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.effective_batch_size = batch_size * gradient_accumulation_steps
         self.seed = seed
         self.epoch = 0
         self._batches = self._build(seed)
@@ -215,32 +223,40 @@ class FullCoverageBatchSampler(Sampler[list[int | tuple[int, float]]]):
         for index, record in enumerate(self.records):
             buckets[record.waveform_length].append(index)
         rng = random.Random(seed)
-        batches: list[list[int | tuple[int, float]]] = []
+        optimizer_groups: list[list[list[int | tuple[int, float]]]] = []
         for length in sorted(buckets):
             indices = list(buckets[length])
             rng.shuffle(indices)
-            for start in range(0, len(indices), self.batch_size):
-                batch: list[int | tuple[int, float]] = list(
-                    indices[start : start + self.batch_size]
+            for start in range(0, len(indices), self.effective_batch_size):
+                effective_batch: list[int | tuple[int, float]] = list(
+                    indices[start : start + self.effective_batch_size]
                 )
-                if len(batch) < self.batch_size:
-                    padding = list(indices)
-                    rng.shuffle(padding)
-                    offset = 0
-                    while len(batch) < self.batch_size:
-                        batch.append((padding[offset % len(padding)], 0.0))
-                        offset += 1
-                batches.append(batch)
-        rng.shuffle(batches)
-        return batches
+                padding = list(indices)
+                rng.shuffle(padding)
+                offset = 0
+                while len(effective_batch) < self.effective_batch_size:
+                    effective_batch.append((padding[offset % len(padding)], 0.0))
+                    offset += 1
+                optimizer_groups.append(
+                    [
+                        effective_batch[micro_start : micro_start + self.batch_size]
+                        for micro_start in range(0, self.effective_batch_size, self.batch_size)
+                    ]
+                )
+        rng.shuffle(optimizer_groups)
+        return [micro_batch for group in optimizer_groups for micro_batch in group]
 
     @property
     def padding_count(self) -> int:
         return sum(isinstance(index, tuple) for batch in self._batches for index in batch)
 
     @property
-    def optimization_steps(self) -> int:
+    def micro_batch_count(self) -> int:
         return len(self._batches)
+
+    @property
+    def optimization_steps(self) -> int:
+        return len(self._batches) // self.gradient_accumulation_steps
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
