@@ -132,15 +132,32 @@ class BearingDiagnosisModel(nn.Module):
 
 
 def weak_supervision_loss(
-    outputs: dict[str, torch.Tensor], targets: torch.Tensor, auxiliary_weight: float = 0.10
+    outputs: dict[str, torch.Tensor],
+    targets: torch.Tensor,
+    auxiliary_weight: float = 0.10,
+    sample_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, float]]:
     targets = targets.float().reshape(-1)
-    main = nn.functional.binary_cross_entropy_with_logits(outputs["abnormal_logit"], targets)
+    weights = (
+        torch.ones_like(targets)
+        if sample_weights is None
+        else sample_weights.to(device=targets.device, dtype=targets.dtype).reshape(-1)
+    )
+    if weights.shape != targets.shape or torch.any(weights < 0) or not torch.isfinite(weights).all():
+        raise ValueError("sample_weights must be finite, non-negative and match targets")
+    denominator = weights.sum().clamp_min(torch.finfo(weights.dtype).eps)
+    per_sample_main = nn.functional.binary_cross_entropy_with_logits(
+        outputs["abnormal_logit"], targets, reduction="none"
+    )
+    main = (per_sample_main * weights).sum() / denominator
     per_sample_aux = nn.functional.binary_cross_entropy_with_logits(
         outputs["mechanism_aux_logit"], targets, reduction="none"
     )
     q = outputs["q_global"].reshape(-1)
-    auxiliary = (per_sample_aux * q).sum() / q.sum().clamp_min(1.0)
+    auxiliary_weights = weights * q
+    auxiliary = (per_sample_aux * auxiliary_weights).sum() / auxiliary_weights.sum().clamp_min(
+        torch.finfo(weights.dtype).eps
+    )
     total = main + float(auxiliary_weight) * auxiliary
     return total, {"main_loss": float(main.detach()), "auxiliary_loss": float(auxiliary.detach())}
 

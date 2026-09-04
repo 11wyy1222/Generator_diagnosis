@@ -19,11 +19,12 @@ from .admission import write_snapshot
 from .artifacts import save_preprocess_state, write_model_card, write_prediction_parquet
 from .config import ModelConfig
 from .dataset import (
-    BalancedGroupBatchSampler,
+    FullCoverageBatchSampler,
     BearingDataset,
     LengthBatchSampler,
     MechanismScaler,
     collect_raw_mechanism_features,
+    group_class_loss_weights,
 )
 from .evaluation import binary_metrics, select_f1_threshold
 from .model import BearingDiagnosisModel, model_metadata, weak_supervision_loss
@@ -89,7 +90,7 @@ def collate_same_length(batch: list[dict[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {"sample_id": [item["sample_id"] for item in batch]}
     for key in (
         "waveform", "spectrum", "rpm_normalized", "mechanism_features",
-        "mechanism_valid_mask", "q_global", "target",
+        "mechanism_valid_mask", "q_global", "target", "loss_weight",
     ):
         result[key] = torch.stack([item[key] for item in batch])  # type: ignore[list-item]
     return result
@@ -232,9 +233,34 @@ def train_one_run(
         f"delta_f_hz={preprocess.frequency_grid.delta_f_hz:g}",
         flush=True,
     )
-    train_dataset = BearingDataset(train_records, preprocess, scaler)
+    training_weights = group_class_loss_weights(train_records)
+    train_dataset = BearingDataset(
+        train_records, preprocess, scaler, sample_weights=training_weights
+    )
     validation_dataset = BearingDataset(validation_records, preprocess, scaler)
-    train_sampler = BalancedGroupBatchSampler(train_records, config.batch_size, seed)
+    train_sampler = FullCoverageBatchSampler(train_records, config.batch_size, seed)
+    print(
+        f"[sampling] full_coverage={len(train_records)} batch_size={config.batch_size} "
+        f"optimization_steps={train_sampler.optimization_steps} "
+        f"zero_weight_padding={train_sampler.padding_count}",
+        flush=True,
+    )
+    (output_dir / "training_sampling.json").write_text(
+        json.dumps(
+            {
+                "strategy": "full_coverage_group_class_weighted",
+                "training_sample_count": len(train_records),
+                "batch_size": config.batch_size,
+                "optimization_steps_per_epoch": train_sampler.optimization_steps,
+                "zero_weight_padding_per_epoch": train_sampler.padding_count,
+                "loss_weight_min": float(training_weights.min()),
+                "loss_weight_max": float(training_weights.max()),
+                "loss_weight_mean": float(training_weights.mean()),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=collate_same_length)
     validation_loader = DataLoader(
         validation_dataset,
@@ -263,7 +289,10 @@ def train_one_run(
             optimizer.zero_grad(set_to_none=True)
             outputs = model(**_model_inputs(batch, device))
             loss, _ = weak_supervision_loss(
-                outputs, batch["target"].to(device), config.mechanism_aux_weight
+                outputs,
+                batch["target"].to(device),
+                config.mechanism_aux_weight,
+                batch["loss_weight"].to(device),
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), config.gradient_clip_norm)
@@ -292,6 +321,8 @@ def train_one_run(
             "validation_f1": float(metrics["f1"]),
             "threshold": threshold,
             "convergence_count": convergence_count,
+            "optimization_steps": train_sampler.optimization_steps,
+            "training_samples_covered": len(train_records),
         })
         if checkpoint_improved(
             current,

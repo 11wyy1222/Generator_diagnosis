@@ -160,44 +160,80 @@ def test_all_ablation_models_forward_and_zero_reliability_degrades() -> None:
             assert output["g_global"][0].item() == 0.0
 
 
-def test_balanced_sampler_keeps_length_and_label_balance() -> None:
-    from bearing_diagnosis.dataset import BalancedGroupBatchSampler
-
-    records = [record(day, abnormal) for abnormal in (False, True) for day in range(6)]
-    batches = list(BalancedGroupBatchSampler(records, batch_size=4))
-    assert batches
-    for batch in batches:
-        selected = [records[index] for index in batch]
-        assert len({item.waveform_length for item in selected}) == 1
-        assert sum(item.is_observed_scope_abnormal for item in selected) * 2 == len(selected)
-
-
-def test_balanced_sampler_equalizes_abnormal_stages() -> None:
+def test_training_sampler_covers_every_record_with_fixed_batches_and_steps() -> None:
     from dataclasses import replace
-    from bearing_diagnosis.dataset import BalancedGroupBatchSampler
+    from bearing_diagnosis.dataset import FullCoverageBatchSampler
+
+    records = [record(day, bool(day % 2)) for day in range(11)]
+    records = [
+        replace(item, waveform_length=1024 if index < 5 else 2048)
+        for index, item in enumerate(records)
+    ]
+    sampler = FullCoverageBatchSampler(records, batch_size=4, seed=2026)
+    expected_steps = len(sampler)
+    for epoch in (0, 1, 2):
+        sampler.set_epoch(epoch)
+        batches = list(sampler)
+        assert len(batches) == expected_steps == 4
+        assert all(len(batch) == 4 for batch in batches)
+        real_indices = [
+            item for batch in batches for item in batch if isinstance(item, int)
+        ]
+        assert sorted(real_indices) == list(range(len(records)))
+        for batch in batches:
+            indices = [item if isinstance(item, int) else item[0] for item in batch]
+            assert len({records[index].waveform_length for index in indices}) == 1
+        padding = [item for batch in batches for item in batch if isinstance(item, tuple)]
+        assert len(padding) == sampler.padding_count == 5
+        assert all(weight == 0.0 for _, weight in padding)
+
+
+def test_group_class_weights_equalize_classes_and_groups_without_downsampling() -> None:
+    from dataclasses import replace
+    from bearing_diagnosis.dataset import group_class_loss_weights
 
     records = []
-    for day in range(12):
-        records.append(replace(record(day, False), sample_id=f"normal-{day}"))
-    offset = 100
-    for stage, count in (("early", 12), ("middle", 8), ("late", 4)):
-        for index in range(count):
-            records.append(
-                replace(
-                    record(offset + index, True),
-                    sample_id=f"{stage}-{index}",
-                    sample_group_id=f"{stage}-group-{index}",
-                    range_position=stage,
-                )
-            )
-        offset += count
-    sampler = BalancedGroupBatchSampler(records, batch_size=8)
-    selected = [records[index] for batch in sampler for index in batch]
-    assert sum(not item.is_observed_scope_abnormal for item in selected) == 12
-    assert {
-        stage: sum(item.range_position == stage for item in selected)
-        for stage in ("early", "middle", "late")
-    } == {"early": 4, "middle": 4, "late": 4}
+    for index in range(8):
+        records.append(
+            replace(record(index, False), sample_group_id="normal-large" if index < 6 else "normal-small")
+        )
+    for index in range(4):
+        records.append(
+            replace(record(100 + index, True), sample_group_id="abnormal-a" if index < 2 else "abnormal-b")
+        )
+    weights = group_class_loss_weights(records)
+    assert len(weights) == len(records)
+    assert float(weights.mean()) == pytest.approx(1.0)
+    normal_mass = sum(float(weights[i]) for i, item in enumerate(records) if not item.is_observed_scope_abnormal)
+    abnormal_mass = sum(float(weights[i]) for i, item in enumerate(records) if item.is_observed_scope_abnormal)
+    assert normal_mass == pytest.approx(abnormal_mass)
+    group_mass = {}
+    for index, item in enumerate(records):
+        group_mass.setdefault((item.is_observed_scope_abnormal, item.sample_group_id), 0.0)
+        group_mass[(item.is_observed_scope_abnormal, item.sample_group_id)] += float(weights[index])
+    assert group_mass[(False, "normal-large")] == pytest.approx(group_mass[(False, "normal-small")])
+    assert group_mass[(True, "abnormal-a")] == pytest.approx(group_mass[(True, "abnormal-b")])
+
+
+def test_zero_weight_padding_does_not_change_weighted_loss() -> None:
+    torch = pytest.importorskip("torch")
+    from bearing_diagnosis.model import weak_supervision_loss
+
+    base = {
+        "abnormal_logit": torch.tensor([-1.0, 2.0]),
+        "mechanism_aux_logit": torch.tensor([-0.5, 1.5]),
+        "q_global": torch.tensor([1.0, 1.0]),
+    }
+    base_loss, _ = weak_supervision_loss(
+        base, torch.tensor([0.0, 1.0]), sample_weights=torch.tensor([1.0, 1.0])
+    )
+    padded = {key: torch.cat([value, value[:1]]) for key, value in base.items()}
+    padded_loss, _ = weak_supervision_loss(
+        padded,
+        torch.tensor([0.0, 1.0, 0.0]),
+        sample_weights=torch.tensor([1.0, 1.0, 0.0]),
+    )
+    assert padded_loss == pytest.approx(base_loss)
 
 
 def test_evaluation_sampler_never_mixes_lengths() -> None:
@@ -255,7 +291,7 @@ def test_one_epoch_training_and_inference_artifacts(tmp_path: Path) -> None:
     for name in (
         "model.pt", "preprocess.json", "frequency_grid.npy", "predictions_validation.parquet",
         "model_best_during_training.pt", "gate_monitoring.parquet", "metrics_validation.json",
-        "model_card.md", "data_snapshot.json",
+        "model_card.md", "data_snapshot.json", "training_sampling.json",
     ):
         assert (run_dir / name).is_file()
     engine = BearingInference(run_dir)
