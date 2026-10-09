@@ -1,6 +1,6 @@
-model_name: weak_cls_semi_direct_v1
+model_name: weak_cls_semi_direct_mechanism_only_v1
 machine_type: semi_direct
-experiment: gated
+experiment: mechanism_only
 rpm_min: 180.0
 rpm_max: 350.0
 business_f_max_hz: 5000.0

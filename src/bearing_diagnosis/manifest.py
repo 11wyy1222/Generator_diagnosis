@@ -10,7 +10,7 @@ import statistics
 from typing import Any, Iterable
 
 from .preprocessing import load_waveform, validate_waveform
-from .schemas import SampleRecord, parse_waveform_filename, write_jsonl
+from .schemas import SampleRecord, parse_waveform_filename, read_jsonl, write_jsonl
 from .splitting import assert_no_group_leakage, range_position, split_development_records
 
 
@@ -159,6 +159,91 @@ def _interval_statistics(records: Iterable[SampleRecord]) -> list[dict[str, Any]
     return output
 
 
+def _configured_split_role(record: SampleRecord, config: dict[str, Any]) -> str:
+    split_policy = config.get("split_policy")
+    if split_policy is None:
+        return str(config["role"])
+    label = "abnormal" if record.is_observed_scope_abnormal else "normal"
+    try:
+        return str(split_policy[label])
+    except KeyError as exc:
+        raise ValueError(
+            f"split_policy for {record.object_id} is missing label {label}"
+        ) from exc
+
+
+def assign_configured_splits(
+    records: Iterable[SampleRecord], object_config: dict[str, Any], seed: int = 2026
+) -> list[SampleRecord]:
+    """Assign leakage-safe splits, optionally using per-label object policies."""
+    records = list(records)
+    development = split_development_records(
+        [
+            record
+            for record in records
+            if _configured_split_role(record, object_config[record.object_id])
+            == "development"
+        ],
+        seed=seed,
+    )
+    development_by_id = {record.sample_id: record for record in development}
+    output: list[SampleRecord] = []
+    for record in records:
+        if record.sample_id in development_by_id:
+            output.append(development_by_id[record.sample_id])
+            continue
+        role = _configured_split_role(record, object_config[record.object_id])
+        if role == "development":
+            raise RuntimeError(f"development split missing for {record.object_id}")
+        output.append(replace(record, dataset_split=role))
+    assert_no_group_leakage(output)
+    return output
+
+
+def _split_group_rows(records: Iterable[SampleRecord], seed: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    grouped: dict[tuple[str, str, str], list[SampleRecord]] = defaultdict(list)
+    for record in records:
+        grouped[(str(record.sample_group_id), record.range_id, str(record.dataset_split))].append(record)
+    for (group_id, range_id, split), members in sorted(grouped.items()):
+        rows.append({
+            "sample_group_id": group_id,
+            "range_id": range_id,
+            "fault_event_id": members[0].fault_event_id,
+            "range_position": members[0].range_position,
+            "dataset_split": split,
+            "split_seed": seed,
+            "sample_count": len(members),
+            "sample_ids": sorted(member.sample_id for member in members),
+        })
+    return rows
+
+
+def build_split_manifest(
+    samples_manifest_path: str | Path,
+    objects_config_path: str | Path,
+    output_path: str | Path,
+    group_output_path: str | Path,
+    seed: int = 2026,
+) -> dict[str, Any]:
+    """Create a model-specific split from an already admitted sample manifest."""
+    records = [SampleRecord.from_dict(row) for row in read_jsonl(samples_manifest_path)]
+    object_config = _read_json(objects_config_path)
+    split_records = assign_configured_splits(records, object_config, seed=seed)
+    write_jsonl(output_path, [record.to_dict() for record in split_records])
+    group_rows = _split_group_rows(split_records, seed)
+    write_jsonl(group_output_path, group_rows)
+    counts = Counter(record.dataset_split for record in split_records)
+    return {
+        "sample_count": len(split_records),
+        "time_block_count": len({
+            record.sample_group_id for record in split_records
+        }),
+        "split_manifest_row_count": len(group_rows),
+        "split_counts": dict(sorted(counts.items())),
+    }
+
+
 def build_dataset(
     raw_root: str | Path,
     output_root: str | Path,
@@ -192,7 +277,9 @@ def build_dataset(
         normal_bounds = (
             tuple(map(_time, configured["normal_range"])) if configured["normal_range"] else None
         )
-        if configured["machine_type"] == "semi_direct":
+        if source.get("rpm_bin"):
+            bin_spec = source["rpm_bin"]
+        elif configured["machine_type"] == "semi_direct":
             bin_spec = source_config["rpm_bins"]["semi_direct"]
         elif object_id == "DFIG_TEST_F14":
             bin_spec = source_config["rpm_bins"]["dfig_f14"]
@@ -208,13 +295,18 @@ def build_dataset(
             abnormal_range_id = None
             if abnormal_bounds is not None and source_label != "confirmed_normal":
                 abnormal_start, abnormal_end = abnormal_bounds
+                full_abnormal = source.get("full_abnormal_range")
+                is_full_abnormal = bool(
+                    full_abnormal
+                    and tuple(map(_time, full_abnormal)) == abnormal_bounds
+                )
                 abnormal_range_id = _range_id(object_id, sensor_position, True)
                 range_bounds[abnormal_range_id] = abnormal_bounds
                 range_rows.append({
                     "range_id": abnormal_range_id,
                     "object_id": object_id,
                     "sensor_position": sensor_position,
-                    "range_type": "full_abnormal" if source_label == "abnormal" else "core_abnormal",
+                    "range_type": "full_abnormal" if source_label == "abnormal" or is_full_abnormal else "core_abnormal",
                     "start": abnormal_start.isoformat(sep=" "),
                     "end": abnormal_end.isoformat(sep=" "),
                     "full_abnormal_start": source.get("full_abnormal_range", [None, None])[0],
@@ -252,6 +344,11 @@ def build_dataset(
 
             for path in sorted(directory.glob("*.csv")):
                 source_counts[object_id] += 1
+                if source_label in {"confirmed_normal", "abnormal"}:
+                    # Explicitly classified directories remain part of the frozen
+                    # source snapshot even when a filename cannot be parsed for
+                    # sample admission.
+                    snapshot_paths.add(path.resolve())
                 try:
                     parsed = parse_waveform_filename(
                         path,
@@ -341,7 +438,9 @@ def build_dataset(
                         else "confirmed_normal_directory" if source_label == "confirmed_normal"
                         else "normal_time_range"
                     ),
-                    "component_orders": configured.get("component_orders"),
+                    "component_orders": directory_spec.get(
+                        "component_orders", configured.get("component_orders")
+                    ),
                     "rpm_bin": _rpm_bin(parsed.rpm, bin_spec),
                 })
                 if len(pending) % 50 == 0:
@@ -380,44 +479,14 @@ def build_dataset(
             records.append(SampleRecord(**raw))
 
     grouped_records = _assign_time_groups(records, range_bounds)
-    development_ids = {
-        object_id for object_id, config in object_config.items() if config["role"] == "development"
-    }
-    development = split_development_records(
-        [record for record in grouped_records if record.object_id in development_ids], seed=2026
-    )
-    development_by_id = {record.sample_id: record for record in development}
-    split_records: list[SampleRecord] = []
-    for record in grouped_records:
-        if record.sample_id in development_by_id:
-            split_records.append(development_by_id[record.sample_id])
-        else:
-            role = str(object_config[record.object_id]["role"])
-            if role == "development":
-                raise RuntimeError(f"development split missing for {record.object_id}")
-            split_records.append(replace(record, dataset_split=role))
-    assert_no_group_leakage(split_records)
+    split_records = assign_configured_splits(grouped_records, object_config, seed=2026)
 
     write_jsonl(manifests_dir / "samples.jsonl", [record.to_dict() for record in grouped_records])
     write_jsonl(manifests_dir / "ranges.jsonl", range_rows)
     write_jsonl(manifests_dir / "rejected_samples.jsonl", rejected)
     write_jsonl(splits_dir / "weak_supervised_split.jsonl", [record.to_dict() for record in split_records])
 
-    group_rows: list[dict[str, Any]] = []
-    grouped_split: dict[tuple[str, str, str], list[SampleRecord]] = defaultdict(list)
-    for record in split_records:
-        grouped_split[(str(record.sample_group_id), record.range_id, str(record.dataset_split))].append(record)
-    for (group_id, range_id, split), members in sorted(grouped_split.items()):
-        group_rows.append({
-            "sample_group_id": group_id,
-            "range_id": range_id,
-            "fault_event_id": members[0].fault_event_id,
-            "range_position": members[0].range_position,
-            "dataset_split": split,
-            "split_seed": 2026,
-            "sample_count": len(members),
-            "sample_ids": sorted(member.sample_id for member in members),
-        })
+    group_rows = _split_group_rows(split_records, 2026)
     write_jsonl(splits_dir / "split_manifest.jsonl", group_rows)
 
     accepted_counts = Counter(
@@ -464,7 +533,7 @@ def build_dataset(
     snapshot = {
         "created_at": datetime.now().astimezone().isoformat(),
         "raw_root": str(raw_root),
-        "scope": "all files inside confirmed normal/core-abnormal time ranges before RPM admission",
+        "scope": "all files inside configured supervised normal/abnormal ranges before RPM admission",
         "file_count": len(snapshot_entries),
         "total_bytes": sum(entry["size"] for entry in snapshot_entries),
         "objects_config_sha256": _stream_sha256(Path(objects_config_path).resolve()),

@@ -13,7 +13,7 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("PyTorch is required; run: pip install -r requirements.txt") from exc
 
 from .mechanism import FEATURE_COUNT, extract_mechanism_features
-from .preprocessing import PreprocessState, load_waveform, native_spectra, validate_waveform
+from .preprocessing import PreprocessState, load_waveform, process_signal, validate_waveform
 from .schemas import SampleRecord
 
 
@@ -50,6 +50,7 @@ class BearingDataset(Dataset):
         preprocess: PreprocessState,
         mechanism_scaler: MechanismScaler | None = None,
         allow_missing_mechanism: bool = False,
+        sample_weights: Sequence[float] | None = None,
     ) -> None:
         self.records = list(records)
         self.preprocess = preprocess
@@ -57,6 +58,14 @@ class BearingDataset(Dataset):
             np.zeros(FEATURE_COUNT, dtype=np.float32), np.ones(FEATURE_COUNT, dtype=np.float32)
         )
         self.allow_missing_mechanism = allow_missing_mechanism
+        if sample_weights is None:
+            self.sample_weights = np.ones(len(self.records), dtype=np.float32)
+        else:
+            self.sample_weights = np.asarray(sample_weights, dtype=np.float32)
+            if self.sample_weights.shape != (len(self.records),):
+                raise ValueError("sample_weights must contain one value per record")
+            if not np.isfinite(self.sample_weights).all() or np.any(self.sample_weights < 0):
+                raise ValueError("sample_weights must be finite and non-negative")
         # Training revisits the same immutable source waveform every epoch.
         # Cache the fully prepared CPU tensors after their first use so later
         # epochs do not repeatedly parse large CSVs and recompute both FFTs.
@@ -67,16 +76,26 @@ class BearingDataset(Dataset):
     def __len__(self) -> int:
         return len(self.records)
 
-    def __getitem__(self, index: int) -> dict[str, object]:
-        cached = self._prepared_cache.get(index)
+    def __getitem__(self, index: int | tuple[int, float]) -> dict[str, object]:
+        if isinstance(index, tuple):
+            record_index, coverage_weight = int(index[0]), float(index[1])
+        else:
+            record_index, coverage_weight = int(index), 1.0
+        cached = self._prepared_cache.get(record_index)
         if cached is not None:
-            return cached
-        record = self.records[index]
+            if coverage_weight == 1.0:
+                return cached
+            weighted = dict(cached)
+            weighted["loss_weight"] = cached["loss_weight"] * coverage_weight
+            return weighted
+        record = self.records[record_index]
         signal = load_waveform(record.waveform_path)
         reasons = validate_waveform(signal, record.waveform_length)
         if reasons:
             raise ValueError(f"rejected waveform {record.sample_id}: {', '.join(reasons)}")
-        frequency, ordinary, envelope = native_spectra(signal, record.sampling_rate_hz)
+        time_signal, frequency, ordinary, envelope = process_signal(
+            signal, record.sampling_rate_hz, self.preprocess.signal_processing_mode
+        )
         spectrum = self.preprocess.frequency_grid.transform(frequency, ordinary, envelope)
         if record.component_orders is None:
             if not self.allow_missing_mechanism:
@@ -103,34 +122,43 @@ class BearingDataset(Dataset):
         features = self.mechanism_scaler.transform(raw_features, valid_mask)
         prepared: dict[str, object] = {
             "sample_id": record.sample_id,
-            "waveform": torch.from_numpy(self.preprocess.normalize_time(signal)[None, :]),
+            "waveform": torch.from_numpy(self.preprocess.normalize_time(time_signal)[None, :]),
             "spectrum": torch.from_numpy(spectrum),
             "rpm_normalized": torch.tensor(self.preprocess.normalize_rpm(record.rpm), dtype=torch.float32),
             "mechanism_features": torch.from_numpy(features),
             "mechanism_valid_mask": torch.from_numpy(valid_mask),
             "q_global": torch.tensor(q_global, dtype=torch.float32),
             "target": torch.tensor(float(record.is_observed_scope_abnormal), dtype=torch.float32),
+            "loss_weight": torch.tensor(self.sample_weights[record_index], dtype=torch.float32),
         }
-        self._prepared_cache[index] = prepared
-        return prepared
+        self._prepared_cache[record_index] = prepared
+        if coverage_weight == 1.0:
+            return prepared
+        weighted = dict(prepared)
+        weighted["loss_weight"] = prepared["loss_weight"] * coverage_weight
+        return weighted
 
 
 def collect_raw_mechanism_features(
-    records: Sequence[SampleRecord], preprocess: PreprocessState
+    records: Sequence[SampleRecord], preprocess: PreprocessState, progress_every: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     features: list[np.ndarray] = []
     masks: list[np.ndarray] = []
-    for record in records:
+    for index, record in enumerate(records, start=1):
         if record.component_orders is None:
             raise ValueError(f"component orders are unconfirmed for {record.object_id}")
         signal = load_waveform(record.waveform_path)
-        frequency, ordinary, envelope = native_spectra(signal, record.sampling_rate_hz)
+        _, frequency, ordinary, envelope = process_signal(
+            signal, record.sampling_rate_hz, preprocess.signal_processing_mode
+        )
         evidence = extract_mechanism_features(
             frequency, ordinary, envelope, record.rpm, record.component_orders,
             record.sampling_rate_hz, record.waveform_length,
         )
         features.append(evidence.features)
         masks.append(evidence.valid_mask)
+        if progress_every and (index % progress_every == 0 or index == len(records)):
+            print(f"[preprocess-mechanism] processed={index}/{len(records)}", flush=True)
     return np.stack(features), np.stack(masks)
 
 
@@ -150,96 +178,91 @@ def records_from_manifest(
     ]
 
 
-class BalancedGroupBatchSampler(Sampler[list[int]]):
-    """Balance labels, sensors, abnormal stages and time blocks by length."""
+def group_class_loss_weights(records: Sequence[SampleRecord]) -> np.ndarray:
+    """Give every class equal mass and every time group equal mass within its class."""
+    from collections import defaultdict
 
-    def __init__(self, records: Sequence[SampleRecord], batch_size: int, seed: int = 2026) -> None:
-        if batch_size < 2:
-            raise ValueError("balanced batches require batch_size >= 2")
+    grouped: dict[int, dict[tuple[str, str], list[int]]] = defaultdict(lambda: defaultdict(list))
+    for index, record in enumerate(records):
+        label = int(record.is_observed_scope_abnormal)
+        group_id = str(record.sample_group_id or record.sample_id)
+        grouped[label][(record.object_id, group_id)].append(index)
+    if not grouped:
+        raise ValueError("training records are required to compute loss weights")
+    weights = np.zeros(len(records), dtype=np.float64)
+    class_mass = 1.0 / len(grouped)
+    for groups in grouped.values():
+        group_mass = class_mass / len(groups)
+        for indices in groups.values():
+            weights[indices] = group_mass / len(indices)
+    weights *= len(records) / weights.sum()
+    return weights.astype(np.float32)
+
+
+class FullCoverageBatchSampler(Sampler[list[int | tuple[int, float]]]):
+    """Cover every record once and align micro batches to optimizer steps."""
+
+    def __init__(
+        self,
+        records: Sequence[SampleRecord],
+        batch_size: int,
+        seed: int = 2026,
+        gradient_accumulation_steps: int = 1,
+    ) -> None:
+        if batch_size < 1 or gradient_accumulation_steps < 1:
+            raise ValueError("batch_size and gradient_accumulation_steps must be positive")
+        if not records:
+            raise ValueError("training records are required")
         self.records = list(records)
         self.batch_size = batch_size
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.effective_batch_size = batch_size * gradient_accumulation_steps
         self.seed = seed
         self.epoch = 0
         self._batches = self._build(seed)
-        if not self._batches:
-            raise ValueError("cannot form label-balanced same-length batches")
 
-    def _build(self, seed: int) -> list[list[int]]:
+    def _build(self, seed: int) -> list[list[int | tuple[int, float]]]:
         from collections import defaultdict
         import random
 
-        cells: dict[tuple[int, int, str, str, str], list[int]] = defaultdict(list)
+        buckets: dict[int, list[int]] = defaultdict(list)
         for index, record in enumerate(self.records):
-            stage = str(record.range_position) if record.is_observed_scope_abnormal else "normal"
-            key = (
-                record.waveform_length,
-                int(record.is_observed_scope_abnormal),
-                stage,
-                record.sensor_position,
-                str(record.sample_group_id),
-            )
-            cells[key].append(index)
+            buckets[record.waveform_length].append(index)
         rng = random.Random(seed)
-        by_length_stage_sensor: dict[tuple[int, str, str], list[int]] = defaultdict(list)
-        # Equal quota per time-block/sensor cell prevents dense acquisition periods dominating.
-        by_length: dict[int, list[list[int]]] = defaultdict(list)
-        for (length, _, _, _, _), indices in cells.items():
-            by_length[length].append(indices)
-        quotas = {length: min(len(indices) for indices in groups) for length, groups in by_length.items()}
-        for (length, _, stage, sensor, _), indices in cells.items():
-            chosen = list(indices)
-            rng.shuffle(chosen)
-            by_length_stage_sensor[(length, stage, sensor)].extend(chosen[: quotas[length]])
-        batches: list[list[int]] = []
-        half = self.batch_size // 2
-        for length in sorted({key[0] for key in by_length_stage_sensor}):
-            sensors = sorted({key[2] for key in by_length_stage_sensor if key[0] == length})
-            required = [
-                (length, stage, sensor)
-                for sensor in sensors
-                for stage in ("normal", "early", "middle", "late")
-            ]
-            if all(by_length_stage_sensor.get(key) for key in required):
-                # Each sensor contributes q samples to every abnormal stage and
-                # 3q normal samples.  This makes early/middle/late equal while
-                # preserving overall normal/abnormal 1:1 and sensor balance.
-                quota = min(
-                    min(len(by_length_stage_sensor[(length, stage, sensor)]) for sensor in sensors for stage in ("early", "middle", "late")),
-                    min(len(by_length_stage_sensor[(length, "normal", sensor)]) // 3 for sensor in sensors),
+        optimizer_groups: list[list[list[int | tuple[int, float]]]] = []
+        for length in sorted(buckets):
+            indices = list(buckets[length])
+            rng.shuffle(indices)
+            for start in range(0, len(indices), self.effective_batch_size):
+                effective_batch: list[int | tuple[int, float]] = list(
+                    indices[start : start + self.effective_batch_size]
                 )
-                negative = []
-                positive = []
-                for sensor in sensors:
-                    normal = list(by_length_stage_sensor[(length, "normal", sensor)])
-                    rng.shuffle(normal)
-                    negative.extend(normal[: 3 * quota])
-                    for stage in ("early", "middle", "late"):
-                        staged = list(by_length_stage_sensor[(length, stage, sensor)])
-                        rng.shuffle(staged)
-                        positive.extend(staged[:quota])
-            else:
-                # Backward-compatible fallback for fixtures or datasets that do
-                # not contain all three abnormal stages.
-                negative = []
-                positive = []
-                for (item_length, stage, _), indices in by_length_stage_sensor.items():
-                    if item_length != length:
-                        continue
-                    (negative if stage == "normal" else positive).extend(indices)
-            # Pair the two labels in RPM order to keep their operating-condition
-            # distributions as close as the available weak-label data permits.
-            negative.sort(key=lambda index: (self.records[index].rpm, rng.random()))
-            positive.sort(key=lambda index: (self.records[index].rpm, rng.random()))
-            usable = min(len(negative), len(positive))
-            for start in range(0, usable, half):
-                left, right = negative[start : start + half], positive[start : start + half]
-                take = min(len(left), len(right))
-                if take:
-                    batch = left[:take] + right[:take]
-                    rng.shuffle(batch)
-                    batches.append(batch)
-        rng.shuffle(batches)
-        return batches
+                padding = list(indices)
+                rng.shuffle(padding)
+                offset = 0
+                while len(effective_batch) < self.effective_batch_size:
+                    effective_batch.append((padding[offset % len(padding)], 0.0))
+                    offset += 1
+                optimizer_groups.append(
+                    [
+                        effective_batch[micro_start : micro_start + self.batch_size]
+                        for micro_start in range(0, self.effective_batch_size, self.batch_size)
+                    ]
+                )
+        rng.shuffle(optimizer_groups)
+        return [micro_batch for group in optimizer_groups for micro_batch in group]
+
+    @property
+    def padding_count(self) -> int:
+        return sum(isinstance(index, tuple) for batch in self._batches for index in batch)
+
+    @property
+    def micro_batch_count(self) -> int:
+        return len(self._batches)
+
+    @property
+    def optimization_steps(self) -> int:
+        return len(self._batches) // self.gradient_accumulation_steps
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
@@ -250,6 +273,11 @@ class BalancedGroupBatchSampler(Sampler[list[int]]):
 
     def __len__(self) -> int:
         return len(self._batches)
+
+
+# Import compatibility for callers of the previous sampler name.  Its behavior is
+# intentionally changed to full coverage; it no longer performs balanced downsampling.
+BalancedGroupBatchSampler = FullCoverageBatchSampler
 
 
 class LengthBatchSampler(Sampler[list[int]]):
@@ -269,6 +297,45 @@ class LengthBatchSampler(Sampler[list[int]]):
 
     def __iter__(self):
         return iter(self.batches)
+
+    def __len__(self) -> int:
+        return len(self.batches)
+
+
+class TimeGroupBatchSampler(Sampler[list[int]]):
+    """Yield one complete object/time group per batch for MIL training or evaluation."""
+
+    def __init__(self, records: Sequence[SampleRecord], seed: int = 2026, shuffle: bool = False) -> None:
+        from collections import defaultdict
+
+        if not records:
+            raise ValueError("records are required")
+        groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for index, record in enumerate(records):
+            group_id = str(record.sample_group_id or record.sample_id)
+            groups[(record.object_id, group_id)].append(index)
+        self.records = list(records)
+        self.seed = seed
+        self.shuffle = shuffle
+        self.epoch = 0
+        self.batches = [groups[key] for key in sorted(groups)]
+        for indices in self.batches:
+            labels = {self.records[index].is_observed_scope_abnormal for index in indices}
+            lengths = {self.records[index].waveform_length for index in indices}
+            splits = {self.records[index].dataset_split for index in indices}
+            if len(labels) != 1 or len(lengths) != 1 or len(splits) != 1:
+                raise ValueError("each MIL time group must have one label, length and dataset split")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        batches = list(self.batches)
+        if self.shuffle:
+            import random
+
+            random.Random(self.seed + self.epoch).shuffle(batches)
+        return iter(batches)
 
     def __len__(self) -> int:
         return len(self.batches)

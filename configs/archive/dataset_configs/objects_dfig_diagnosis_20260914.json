@@ -1,0 +1,58 @@
+{
+  "DFIG_DEV_41": {
+    "machine_type": "dfig",
+    "role": "development",
+    "rpm_range": [600.0, 1200.0],
+    "component_orders": {"rolling_element": 4.61, "cage": 0.45, "outer_race": 10.71, "inner_race": 13.29},
+    "abnormal_range": ["2024-01-03 00:00:00", "2026-05-15 05:36:00"],
+    "normal_range": ["2026-05-16 21:36:00", "2026-06-16 21:36:00"]
+  },
+  "DFIG_NEW_NH_36": {
+    "machine_type": "dfig",
+    "role": "development",
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": {"rolling_element": 2.3428, "cage": 0.46857, "outer_race": 3.5798, "inner_race": 5.4202},
+    "abnormal_range": ["2025-10-03 00:00:00", "2026-06-18 23:59:59"],
+    "normal_range": null
+  },
+  "DFIG_NEW_XCH_32": {
+    "machine_type": "dfig",
+    "role": "development",
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": null,
+    "abnormal_range": null,
+    "normal_range": null
+  },
+  "DFIG_NEW_NH_12": {
+    "machine_type": "dfig",
+    "role": "cross_turbine_test",
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": {"rolling_element": 2.3428, "cage": 0.46857, "outer_race": 3.5798, "inner_race": 5.4202},
+    "abnormal_range": ["2026-01-01 00:00:00", "2026-08-19 23:59:59"],
+    "normal_range": ["1900-01-01 00:00:00", "2025-12-31 23:59:59"]
+  },
+  "DFIG_TEST_F14": {
+    "machine_type": "dfig",
+    "role": "external_test",
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": {"rolling_element": 2.359, "cage": 0.3984, "outer_race": 3.5856, "inner_race": 5.4144},
+    "abnormal_range": ["2026-03-25 18:30:45", "2026-07-26 08:49:15"],
+    "normal_range": null
+  },
+  "DFIG_NEW_WW_F1": {
+    "machine_type": "dfig",
+    "role": "external_test",
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": {"rolling_element": 2.359, "cage": 0.3984, "outer_race": 3.5856, "inner_race": 5.4144},
+    "abnormal_range": ["2026-03-25 00:00:00", "2026-06-21 23:59:59"],
+    "normal_range": null
+  },
+  "DFIG_NEW_BDB_A1": {
+    "machine_type": "dfig",
+    "role": "external_normal_test",
+    "rpm_range": [500.0, 1200.0],
+    "component_orders": null,
+    "abnormal_range": null,
+    "normal_range": null
+  }
+}

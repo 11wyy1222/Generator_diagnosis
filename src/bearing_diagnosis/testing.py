@@ -33,6 +33,16 @@ def _probability_summary(
     rows: Iterable[dict[str, Any]], threshold: float
 ) -> dict[str, Any]:
     rows = list(rows)
+    if not rows:
+        return {
+            "sample_count": 0,
+            "threshold": threshold,
+            "predicted_abnormal_count": 0,
+            "probability_quantiles": {
+                f"p{percentile}": None for percentile in (10, 25, 50, 75, 90)
+            },
+            "metrics_scope": "empty",
+        }
     probabilities = np.asarray([float(row["abnormal_probability"]) for row in rows])
     targets = np.asarray([int(row["target"]) for row in rows], dtype=np.int64)
     summary: dict[str, Any] = {

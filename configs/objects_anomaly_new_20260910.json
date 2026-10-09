@@ -1,0 +1,56 @@
+{
+  "DFIG_TEST_F14": {
+    "machine_type": "dfig",
+    "role": "external_test",
+    "split_policy": {"normal": "train", "abnormal": "test"},
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": {"rolling_element": 2.359, "cage": 0.3984, "outer_race": 3.5856, "inner_race": 5.4144},
+    "abnormal_range": ["2026-03-25 18:30:45", "2026-07-26 08:49:15"],
+    "normal_range": null
+  },
+  "DFIG_NEW_NH_36": {
+    "machine_type": "dfig",
+    "role": "development",
+    "split_policy": {"normal": "train", "abnormal": "validation"},
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": {"rolling_element": 2.3428, "cage": 0.46857, "outer_race": 3.5798, "inner_race": 5.4202},
+    "abnormal_range": ["2025-10-03 00:00:00", "2026-06-18 23:59:59"],
+    "normal_range": null
+  },
+  "SD_NEW_DZ_A1": {
+    "machine_type": "semi_direct",
+    "role": "development",
+    "split_policy": {"normal": "train", "abnormal": "validation"},
+    "rpm_range": [180.0, 260.0],
+    "component_orders": {"rolling_element": 5.175, "cage": 0.450, "outer_race": 12.210, "inner_race": 14.190},
+    "abnormal_range": null,
+    "normal_range": null
+  },
+  "DFIG_NEW_XCH_32": {
+    "machine_type": "dfig",
+    "role": "development",
+    "split_policy": {"normal": "train", "abnormal": "validation"},
+    "rpm_range": [1000.0, 1900.0],
+    "component_orders": null,
+    "abnormal_range": null,
+    "normal_range": null
+  },
+  "SD_NEW_PQ_35": {
+    "machine_type": "semi_direct",
+    "role": "external_test",
+    "split_policy": {"normal": "train", "abnormal": "test"},
+    "rpm_range": [180.0, 350.0],
+    "component_orders": {"rolling_element": 5.175, "cage": 0.450, "outer_race": 12.210, "inner_race": 14.190},
+    "abnormal_range": ["2025-08-18 00:00:00", "2026-06-01 23:59:59"],
+    "normal_range": null
+  },
+  "DFIG_NEW_BDB_A1": {
+    "machine_type": "dfig",
+    "role": "development",
+    "split_policy": {"normal": "train", "abnormal": "validation"},
+    "rpm_range": [500.0, 1200.0],
+    "component_orders": {"rolling_element": 4.61, "cage": 0.45, "outer_race": 10.71, "inner_race": 13.29},
+    "abnormal_range": null,
+    "normal_range": null
+  }
+}

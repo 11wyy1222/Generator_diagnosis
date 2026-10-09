@@ -14,7 +14,7 @@ from .artifacts import load_preprocess_state
 from .config import ModelConfig
 from .mechanism import extract_mechanism_features
 from .model import BearingDiagnosisModel
-from .preprocessing import load_waveform, native_spectra, validate_waveform
+from .preprocessing import load_waveform, process_signal, validate_waveform
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,10 @@ class BearingInference:
         self.model.eval()
         self.threshold = float(checkpoint["evaluation_threshold"])
         self.preprocess, self.scaler = load_preprocess_state(self.run_dir)
+        if self.preprocess.signal_processing_mode != self.config.signal_processing_mode:
+            raise ValueError(
+                "checkpoint and frozen preprocessing use different signal processing modes"
+            )
 
     @torch.no_grad()
     def predict(self, item: InferenceInput) -> tuple[dict[str, object], dict[str, object]]:
@@ -46,7 +50,9 @@ class BearingInference:
         reasons = validate_waveform(signal)
         if reasons:
             raise ValueError(f"rejected waveform {item.sample_id}: {', '.join(reasons)}")
-        frequency, ordinary, envelope = native_spectra(signal, item.sampling_rate_hz)
+        time_signal, frequency, ordinary, envelope = process_signal(
+            signal, item.sampling_rate_hz, self.preprocess.signal_processing_mode
+        )
         spectrum = self.preprocess.frequency_grid.transform(frequency, ordinary, envelope)
         evidence = extract_mechanism_features(
             frequency, ordinary, envelope, item.rpm, item.component_orders,
@@ -54,7 +60,7 @@ class BearingInference:
         )
         features = self.scaler.transform(evidence.features, evidence.valid_mask)
         outputs = self.model(
-            waveform=torch.from_numpy(self.preprocess.normalize_time(signal)[None, None, :]).to(self.device),
+            waveform=torch.from_numpy(self.preprocess.normalize_time(time_signal)[None, None, :]).to(self.device),
             spectrum=torch.from_numpy(spectrum[None, ...]).to(self.device),
             rpm_normalized=torch.tensor([self.preprocess.normalize_rpm(item.rpm)], dtype=torch.float32, device=self.device),
             mechanism_features=torch.from_numpy(features[None, ...]).to(self.device),
@@ -74,6 +80,7 @@ class BearingInference:
             "waveform_length": int(signal.size),
             "rpm": item.rpm,
             "fft_resolution_hz": item.sampling_rate_hz / signal.size,
+            "signal_processing_mode": self.preprocess.signal_processing_mode,
             "q_global": evidence.q_global,
             "g_global": float(outputs["g_global"][0].cpu()),
             "mechanism_aux_probability": float(torch.sigmoid(outputs["mechanism_aux_logit"])[0].cpu()),
