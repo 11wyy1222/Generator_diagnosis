@@ -1,0 +1,54 @@
+{
+  "datasets": {
+    "new_20260910": {
+      "raw_root": "D:\\CMS故障诊断数据",
+      "output_root": "D:\\Generator_diagnosis\\dataset_root_new_20260910",
+      "objects_config_diagnosis": "configs/objects_diagnosis_new_20260910.json",
+      "objects_config_anomaly": "configs/objects_anomaly_new_20260910.json",
+      "sources_config": "configs/data_sources_new_20260910.json",
+      "samples_manifest": "dataset_root_new_20260910/manifests/samples.jsonl",
+      "ranges_manifest": "dataset_root_new_20260910/manifests/ranges.jsonl",
+      "rejected_manifest": "dataset_root_new_20260910/manifests/rejected_samples.jsonl",
+      "data_snapshot": "dataset_root_new_20260910/manifests/data_snapshot.json",
+      "data_snapshot_sha256": "D840B1E295F4A0EC36F7BCCD17217E4E85AFC683ABA809388E8A34DB4242A0D1",
+      "accepted_count": 9568,
+      "rejected_count": 7734,
+      "diagnosis_split": "dataset_root_new_20260910/splits/diagnosis_split.jsonl",
+      "anomaly_split": "dataset_root_new_20260910/splits/anomaly_split.jsonl"
+    },
+    "unified_full_20260911": {
+      "raw_roots": [
+        "D:\\CMS故障诊断数据",
+        "D:\\data"
+      ],
+      "output_root": "D:\\Generator_diagnosis\\dataset_root_unified_full_20260911",
+      "objects_config_diagnosis": "configs/objects_diagnosis_unified_full_20260911.json",
+      "objects_config_anomaly": "configs/objects_anomaly_unified_full_20260911.json",
+      "sources_config": "configs/data_sources_unified_full_20260911.json",
+      "samples_manifest": "dataset_root_unified_full_20260911/manifests/samples.jsonl",
+      "ranges_manifest": "dataset_root_unified_full_20260911/manifests/ranges.jsonl",
+      "rejected_manifest": "dataset_root_unified_full_20260911/manifests/rejected_samples.jsonl",
+      "data_snapshot": "dataset_root_unified_full_20260911/manifests/data_snapshot.json",
+      "data_snapshot_sha256": "E5AA2AF7EE1898B526E7008F0C7958645F111C6D11F1B255731109DCFAA409E7",
+      "raw_source_file_count": 36800,
+      "snapshot_file_count": 35567,
+      "accepted_count": 21035,
+      "rejected_count": 14532,
+      "time_block_count": 3780,
+      "diagnosis_split": "dataset_root_unified_full_20260911/splits/diagnosis_split.jsonl",
+      "diagnosis_split_counts": {
+        "train": 10994,
+        "validation": 4642,
+        "cross_turbine_test": 1818,
+        "cross_project_abnormal_test": 2745,
+        "external_test": 836
+      },
+      "anomaly_split": "dataset_root_unified_full_20260911/splits/anomaly_split.jsonl",
+      "anomaly_split_counts": {
+        "train": 6734,
+        "validation": 9058,
+        "test": 5243
+      }
+    }
+  }
+}

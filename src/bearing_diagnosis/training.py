@@ -28,7 +28,13 @@ from .dataset import (
 )
 from .evaluation import binary_metrics, select_f1_threshold
 from .model import BearingDiagnosisModel, model_metadata, weak_supervision_loss
-from .preprocessing import FrequencyGrid, PreprocessState, fit_amplitude_p995, load_waveform
+from .preprocessing import (
+    FrequencyGrid,
+    PreprocessState,
+    fit_amplitude_p995,
+    load_waveform,
+    process_time_signal,
+)
 from .schemas import SampleRecord, write_jsonl
 from .splitting import assert_no_group_leakage
 
@@ -135,6 +141,7 @@ def evaluate(
                 {
                     "sample_id": str(sample_id),
                     "target": int(targets[index]),
+                    "abnormal_logit": float(output["abnormal_logit"][index].cpu()),
                     "abnormal_probability": float(probability[index]),
                     "mechanism_aux_probability": float(auxiliary[index]),
                     "q_global": float(output["q_global"][index].cpu()),
@@ -162,7 +169,13 @@ def fit_preprocessing(train_records: list[SampleRecord], config: ModelConfig) ->
     normal = [record for record in train_records if not record.is_observed_scope_abnormal]
     if not normal:
         raise ValueError("normal training samples are required to fit preprocessing")
-    signals = [load_waveform(record.waveform_path) for record in normal]
+    signals = []
+    for index, record in enumerate(normal, start=1):
+        signal = load_waveform(record.waveform_path)
+        time_signal = process_time_signal(signal, config.signal_processing_mode)
+        signals.append(time_signal)
+        if index % 250 == 0 or index == len(normal):
+            print(f"[preprocess-amplitude] processed={index}/{len(normal)}", flush=True)
     p995 = fit_amplitude_p995(signals)
     max_theoretical = max(
         record.rpm / 60.0 * max(record.component_orders.values()) * 5.0
@@ -173,8 +186,14 @@ def fit_preprocessing(train_records: list[SampleRecord], config: ModelConfig) ->
         config.business_f_max_hz,
         max_theoretical,
     )
-    state = PreprocessState(p995, grid, config.rpm_min, config.rpm_max)
-    features, masks = collect_raw_mechanism_features(train_records, state)
+    state = PreprocessState(
+        p995,
+        grid,
+        config.rpm_min,
+        config.rpm_max,
+        config.signal_processing_mode,
+    )
+    features, masks = collect_raw_mechanism_features(train_records, state, progress_every=250)
     return state, MechanismScaler.fit(features, masks)
 
 
@@ -186,6 +205,12 @@ def train_one_run(
     seed: int = 2026,
     device_name: str | None = None,
 ) -> dict[str, object]:
+    if config.algorithm_version == "v2_ssl_mil":
+        from .training_v2 import train_mil_v2
+
+        return train_mil_v2(
+            config, train_records, validation_records, run_dir, seed, device_name
+        )
     if not train_records or not validation_records:
         raise ValueError("non-empty train and validation records are required")
     if {r.machine_type for r in train_records + validation_records} != {config.machine_type}:

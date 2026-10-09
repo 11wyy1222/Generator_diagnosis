@@ -38,3 +38,9 @@ runs/**
 # OS metadata
 Thumbs.db
 .DS_Store
+# Generated test and delivery artifacts
+test_tmp_*/
+server_bundle_*/
+*.tar.gz
+artifacts/server_bundles/
+artifacts/packages/

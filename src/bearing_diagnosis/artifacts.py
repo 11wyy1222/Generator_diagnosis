@@ -20,6 +20,7 @@ def save_preprocess_state(run_dir: str | Path, state: PreprocessState, scaler: M
         "amplitude_p995": state.amplitude_p995,
         "rpm_min": state.rpm_min,
         "rpm_max": state.rpm_max,
+        "signal_processing_mode": state.signal_processing_mode,
         "frequency_grid": {
             "f_max_hz": state.frequency_grid.f_max_hz,
             "delta_f_hz": state.frequency_grid.delta_f_hz,
@@ -39,7 +40,13 @@ def load_preprocess_state(run_dir: str | Path) -> tuple[PreprocessState, Mechani
     scaler_data = np.load(source / "mechanism_scaler.npz", allow_pickle=False)
     grid = FrequencyGrid(axis, metadata["frequency_grid"]["f_max_hz"], metadata["frequency_grid"]["delta_f_hz"])
     return (
-        PreprocessState(metadata["amplitude_p995"], grid, metadata["rpm_min"], metadata["rpm_max"]),
+        PreprocessState(
+            metadata["amplitude_p995"],
+            grid,
+            metadata["rpm_min"],
+            metadata["rpm_max"],
+            metadata.get("signal_processing_mode", "native"),
+        ),
         MechanismScaler(scaler_data["center"], scaler_data["scale"]),
     )
 

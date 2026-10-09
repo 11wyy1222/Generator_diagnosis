@@ -13,7 +13,7 @@ except ImportError as exc:  # pragma: no cover
     raise RuntimeError("PyTorch is required; run: pip install -r requirements.txt") from exc
 
 from .mechanism import FEATURE_COUNT, extract_mechanism_features
-from .preprocessing import PreprocessState, load_waveform, native_spectra, validate_waveform
+from .preprocessing import PreprocessState, load_waveform, process_signal, validate_waveform
 from .schemas import SampleRecord
 
 
@@ -93,7 +93,9 @@ class BearingDataset(Dataset):
         reasons = validate_waveform(signal, record.waveform_length)
         if reasons:
             raise ValueError(f"rejected waveform {record.sample_id}: {', '.join(reasons)}")
-        frequency, ordinary, envelope = native_spectra(signal, record.sampling_rate_hz)
+        time_signal, frequency, ordinary, envelope = process_signal(
+            signal, record.sampling_rate_hz, self.preprocess.signal_processing_mode
+        )
         spectrum = self.preprocess.frequency_grid.transform(frequency, ordinary, envelope)
         if record.component_orders is None:
             if not self.allow_missing_mechanism:
@@ -120,7 +122,7 @@ class BearingDataset(Dataset):
         features = self.mechanism_scaler.transform(raw_features, valid_mask)
         prepared: dict[str, object] = {
             "sample_id": record.sample_id,
-            "waveform": torch.from_numpy(self.preprocess.normalize_time(signal)[None, :]),
+            "waveform": torch.from_numpy(self.preprocess.normalize_time(time_signal)[None, :]),
             "spectrum": torch.from_numpy(spectrum),
             "rpm_normalized": torch.tensor(self.preprocess.normalize_rpm(record.rpm), dtype=torch.float32),
             "mechanism_features": torch.from_numpy(features),
@@ -138,21 +140,25 @@ class BearingDataset(Dataset):
 
 
 def collect_raw_mechanism_features(
-    records: Sequence[SampleRecord], preprocess: PreprocessState
+    records: Sequence[SampleRecord], preprocess: PreprocessState, progress_every: int | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     features: list[np.ndarray] = []
     masks: list[np.ndarray] = []
-    for record in records:
+    for index, record in enumerate(records, start=1):
         if record.component_orders is None:
             raise ValueError(f"component orders are unconfirmed for {record.object_id}")
         signal = load_waveform(record.waveform_path)
-        frequency, ordinary, envelope = native_spectra(signal, record.sampling_rate_hz)
+        _, frequency, ordinary, envelope = process_signal(
+            signal, record.sampling_rate_hz, preprocess.signal_processing_mode
+        )
         evidence = extract_mechanism_features(
             frequency, ordinary, envelope, record.rpm, record.component_orders,
             record.sampling_rate_hz, record.waveform_length,
         )
         features.append(evidence.features)
         masks.append(evidence.valid_mask)
+        if progress_every and (index % progress_every == 0 or index == len(records)):
+            print(f"[preprocess-mechanism] processed={index}/{len(records)}", flush=True)
     return np.stack(features), np.stack(masks)
 
 
@@ -291,6 +297,45 @@ class LengthBatchSampler(Sampler[list[int]]):
 
     def __iter__(self):
         return iter(self.batches)
+
+    def __len__(self) -> int:
+        return len(self.batches)
+
+
+class TimeGroupBatchSampler(Sampler[list[int]]):
+    """Yield one complete object/time group per batch for MIL training or evaluation."""
+
+    def __init__(self, records: Sequence[SampleRecord], seed: int = 2026, shuffle: bool = False) -> None:
+        from collections import defaultdict
+
+        if not records:
+            raise ValueError("records are required")
+        groups: dict[tuple[str, str], list[int]] = defaultdict(list)
+        for index, record in enumerate(records):
+            group_id = str(record.sample_group_id or record.sample_id)
+            groups[(record.object_id, group_id)].append(index)
+        self.records = list(records)
+        self.seed = seed
+        self.shuffle = shuffle
+        self.epoch = 0
+        self.batches = [groups[key] for key in sorted(groups)]
+        for indices in self.batches:
+            labels = {self.records[index].is_observed_scope_abnormal for index in indices}
+            lengths = {self.records[index].waveform_length for index in indices}
+            splits = {self.records[index].dataset_split for index in indices}
+            if len(labels) != 1 or len(lengths) != 1 or len(splits) != 1:
+                raise ValueError("each MIL time group must have one label, length and dataset split")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        batches = list(self.batches)
+        if self.shuffle:
+            import random
+
+            random.Random(self.seed + self.epoch).shuffle(batches)
+        return iter(batches)
 
     def __len__(self) -> int:
         return len(self.batches)

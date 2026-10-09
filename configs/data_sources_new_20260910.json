@@ -1,0 +1,138 @@
+{
+  "rpm_bins": {
+    "semi_direct": {"minimum": 180.0, "maximum": 350.0, "width": 20.0},
+    "dfig_development": {"minimum": 600.0, "maximum": 1200.0, "width": 100.0},
+    "dfig_f14": {"minimum": 1000.0, "maximum": 1900.0, "width": 100.0}
+  },
+  "objects": {
+    "DFIG_TEST_F14": {
+      "project_id": "S1-20230840",
+      "turbine_id": "F14",
+      "source_turbine_id": "FJ14",
+      "classification_document_turbine_id": "F1",
+      "fault_event_id": "DFIG_TEST_F14_event_001",
+      "known_fault_component": "驱动端轴承内环",
+      "full_abnormal_range": ["2026-03-25 18:30:45", "2026-07-26 08:49:15"],
+      "rpm_bin": {"minimum": 1000.0, "maximum": 1900.0, "width": 100.0},
+      "directories": [
+        {
+          "name": "武威-14-发电机驱动端",
+          "sensor_position": "驱动端",
+          "source_sensor_position": "驱动端径向",
+          "label": "abnormal"
+        }
+      ]
+    },
+    "DFIG_NEW_NH_36": {
+      "project_id": "S1-20220077",
+      "turbine_id": "36",
+      "fault_event_id": "DFIG_NEW_NH_36_event_001",
+      "known_fault_component": "非驱动端轴承内环",
+      "full_abnormal_range": ["2025-10-03 00:00:00", "2026-06-18 23:59:59"],
+      "rpm_bin": {"minimum": 1000.0, "maximum": 1900.0, "width": 100.0},
+      "directories": [
+        {
+          "name": "内黄-36-发电机非驱动端",
+          "sensor_position": "非驱动端",
+          "source_sensor_position": "非驱动端水平9H",
+          "label": "abnormal"
+        }
+      ]
+    },
+    "SD_NEW_DZ_A1": {
+      "project_id": "S1-20190020",
+      "turbine_id": "A1",
+      "fault_event_id": null,
+      "known_fault_component": null,
+      "rpm_bin": {"minimum": 180.0, "maximum": 260.0, "width": 20.0},
+      "directories": [
+        {
+          "name": "德州-a1-发电机右侧正常",
+          "sensor_position": "3点",
+          "source_sensor_position": "外部径向右偏58度",
+          "label": "confirmed_normal",
+          "require_position": false
+        },
+        {
+          "name": "德州-a1-发电机左侧正常",
+          "sensor_position": "9点",
+          "source_sensor_position": "外部径向左偏58度",
+          "label": "confirmed_normal",
+          "require_position": false
+        }
+      ]
+    },
+    "DFIG_NEW_XCH_32": {
+      "project_id": "S1-20200038",
+      "turbine_id": "32",
+      "fault_event_id": null,
+      "known_fault_component": null,
+      "rpm_bin": {"minimum": 1000.0, "maximum": 1900.0, "width": 100.0},
+      "directories": [
+        {
+          "name": "小草湖-32-发电机驱动端正常",
+          "sensor_position": "驱动端",
+          "source_sensor_position": "驱动端垂直",
+          "label": "confirmed_normal",
+          "component_orders": {
+            "rolling_element": 2.359,
+            "cage": 0.398,
+            "outer_race": 3.187,
+            "inner_race": 4.812
+          }
+        },
+        {
+          "name": "小草湖-32-发电机非驱动端正常",
+          "sensor_position": "非驱动端",
+          "source_sensor_position": "非驱动端水平",
+          "label": "confirmed_normal",
+          "component_orders": {
+            "rolling_element": 2.399,
+            "cage": 0.399,
+            "outer_race": 3.588,
+            "inner_race": 5.415
+          }
+        }
+      ]
+    },
+    "SD_NEW_PQ_35": {
+      "project_id": "S1-20200053",
+      "turbine_id": "35",
+      "fault_event_id": "SD_NEW_PQ_35_event_001",
+      "known_fault_component": "非驱动端轴承外环",
+      "full_abnormal_range": ["2025-08-18 00:00:00", "2026-06-01 23:59:59"],
+      "rpm_bin": {"minimum": 180.0, "maximum": 350.0, "width": 20.0},
+      "directories": [
+        {
+          "name": "裴桥-35-发电机右侧",
+          "sensor_position": "3点",
+          "source_sensor_position": "外部径向右偏58度",
+          "label": "abnormal",
+          "require_position": false
+        },
+        {
+          "name": "裴桥-35-发电机左侧",
+          "sensor_position": "9点",
+          "source_sensor_position": "外部径向左偏58度",
+          "label": "abnormal",
+          "require_position": false
+        }
+      ]
+    },
+    "DFIG_NEW_BDB_A1": {
+      "project_id": "S1-20230010",
+      "turbine_id": "A1",
+      "fault_event_id": null,
+      "known_fault_component": null,
+      "rpm_bin": {"minimum": 500.0, "maximum": 1200.0, "width": 100.0},
+      "directories": [
+        {
+          "name": "半岛北-a1-发电机后轴承正常",
+          "sensor_position": "非驱动端",
+          "source_sensor_position": "自由端垂直",
+          "label": "confirmed_normal"
+        }
+      ]
+    }
+  }
+}

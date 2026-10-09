@@ -83,6 +83,8 @@ class BearingDiagnosisModel(nn.Module):
         self.global_gate = mlp([129, 64, 1], final_activation=False)
         self.layer_norm = nn.LayerNorm(64)
         self.gated_head = mlp([128, 64, 32, 1], config.dropout, final_activation=False)
+        # Stored separately in v2 checkpoints so historical v1 state dicts remain strict-load compatible.
+        self.register_buffer("normal_center", torch.zeros(64), persistent=False)
 
     def encode_spectrum(self, waveform: torch.Tensor, spectrum: torch.Tensor, rpm: torch.Tensor) -> torch.Tensor:
         z_raw = self.time_encoder(waveform)
@@ -128,7 +130,76 @@ class BearingDiagnosisModel(nn.Module):
             "q_global": q.squeeze(1),
             "g_global": gate.squeeze(1),
             "mechanism_to_spectrum_norm_ratio": gated_phy.norm(dim=1) / z_spec.norm(dim=1).clamp_min(1e-8),
+            "deep_embedding": z_spec,
+            "normal_distance": ((z_spec - self.normal_center) ** 2).mean(dim=1),
         }
+
+
+def topk_mil_loss(
+    outputs: dict[str, torch.Tensor],
+    targets: torch.Tensor,
+    top_fraction: float = 0.20,
+    auxiliary_weight: float = 0.10,
+    normal_center_weight: float = 0.10,
+    bag_weight: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Weak bag loss: all normal instances low; only positive-bag top-k must be high."""
+    targets = targets.float().reshape(-1)
+    if targets.numel() == 0 or torch.unique(targets).numel() != 1:
+        raise ValueError("one MIL batch must be one non-empty, label-homogeneous time group")
+    label = targets[0]
+    logits = outputs["abnormal_logit"].reshape(-1)
+    aux_logits = outputs["mechanism_aux_logit"].reshape(-1)
+    q = outputs["q_global"].reshape(-1)
+    if label.item() >= 0.5:
+        k = max(1, int(torch.ceil(torch.tensor(logits.numel() * top_fraction)).item()))
+        main = nn.functional.binary_cross_entropy_with_logits(logits.topk(k).values.mean(), label)
+        valid_aux = aux_logits[q > 0]
+        if valid_aux.numel():
+            aux_k = min(k, valid_aux.numel())
+            auxiliary = nn.functional.binary_cross_entropy_with_logits(
+                valid_aux.topk(aux_k).values.mean(), label
+            )
+        else:
+            auxiliary = logits.new_zeros(())
+        center = logits.new_zeros(())
+    else:
+        main = nn.functional.binary_cross_entropy_with_logits(logits, torch.zeros_like(logits)).mean()
+        per_aux = nn.functional.binary_cross_entropy_with_logits(aux_logits, torch.zeros_like(aux_logits))
+        auxiliary = (per_aux * q).sum() / q.sum().clamp_min(torch.finfo(q.dtype).eps)
+        center = outputs["normal_distance"].mean()
+    total = float(bag_weight) * (
+        main + float(auxiliary_weight) * auxiliary + float(normal_center_weight) * center
+    )
+    return total, {
+        "main_loss": float(main.detach()),
+        "auxiliary_loss": float(auxiliary.detach()),
+        "normal_center_loss": float(center.detach()),
+    }
+
+
+def ssl_consistency_loss(
+    first: torch.Tensor,
+    second: torch.Tensor,
+    variance_weight: float = 0.10,
+    covariance_weight: float = 0.01,
+) -> torch.Tensor:
+    """VICReg-style normal-only consistency objective for the deep embedding."""
+    invariance = nn.functional.mse_loss(
+        nn.functional.normalize(first, dim=1), nn.functional.normalize(second, dim=1)
+    )
+    first_centered = first - first.mean(0)
+    second_centered = second - second.mean(0)
+    std_penalty = torch.relu(1.0 - torch.sqrt(first.var(0, unbiased=False) + 1e-4)).mean()
+    std_penalty = std_penalty + torch.relu(1.0 - torch.sqrt(second.var(0, unbiased=False) + 1e-4)).mean()
+    if first.shape[0] > 1:
+        cov_first = first_centered.T @ first_centered / (first.shape[0] - 1)
+        cov_second = second_centered.T @ second_centered / (second.shape[0] - 1)
+        eye = torch.eye(first.shape[1], device=first.device, dtype=first.dtype)
+        covariance = ((cov_first * (1 - eye)) ** 2).mean() + ((cov_second * (1 - eye)) ** 2).mean()
+    else:
+        covariance = first.new_zeros(())
+    return invariance + float(variance_weight) * std_penalty + float(covariance_weight) * covariance
 
 
 def weak_supervision_loss(
@@ -171,6 +242,7 @@ def model_metadata(model: BearingDiagnosisModel) -> dict[str, Any]:
         "model_name": model.config.model_name,
         "machine_type": model.config.machine_type,
         "experiment": model.config.experiment,
+        "algorithm_version": model.config.algorithm_version,
         "config_hash": model.config.config_hash,
         "parameter_count": sum(parameter.numel() for parameter in model.parameters()),
         "external_outputs": ["sample_id", "abnormal_probability", "component_probabilities"],

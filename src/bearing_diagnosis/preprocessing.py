@@ -3,18 +3,78 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
-from typing import Iterable
+import re
+from typing import Iterable, Literal
+from xml.etree import ElementTree
+from zipfile import BadZipFile, ZipFile, is_zipfile
 
 import numpy as np
 
+from .vibration_analysis import vibration_analysis
+
+
+SignalProcessingMode = Literal["native", "vibration_analysis"]
+
+
+def _excel_column_index(cell_reference: str) -> int | None:
+    match = re.match(r"([A-Za-z]+)", cell_reference)
+    if match is None:
+        return None
+    index = 0
+    for character in match.group(1).upper():
+        index = index * 26 + ord(character) - ord("A") + 1
+    return index
+
+
+def _load_openxml_first_numeric_column(path: Path) -> np.ndarray:
+    """Load the leftmost numeric column from an XLSX/OpenXML workbook."""
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    try:
+        with ZipFile(path) as workbook:
+            worksheets = sorted(
+                name
+                for name in workbook.namelist()
+                if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+            )
+            if not worksheets:
+                raise ValueError("OpenXML workbook contains no worksheets")
+            columns: dict[int, list[float]] = {}
+            with workbook.open(worksheets[0]) as worksheet:
+                for _, cell in ElementTree.iterparse(worksheet, events=("end",)):
+                    if cell.tag != f"{namespace}c":
+                        continue
+                    column = _excel_column_index(cell.attrib.get("r", ""))
+                    value_element = cell.find(f"{namespace}v")
+                    if (
+                        column is not None
+                        and value_element is not None
+                        and value_element.text is not None
+                    ):
+                        try:
+                            value = float(value_element.text)
+                        except ValueError:
+                            pass
+                        else:
+                            if math.isfinite(value):
+                                columns.setdefault(column, []).append(value)
+                    cell.clear()
+    except (BadZipFile, KeyError, OSError, ElementTree.ParseError) as exc:
+        raise ValueError(f"cannot parse OpenXML waveform workbook: {path}") from exc
+    if not columns:
+        raise ValueError(f"OpenXML waveform workbook has no numeric data: {path}")
+    return np.asarray(columns[min(columns)], dtype=np.float64)
+
 
 def load_waveform(path: str | Path) -> np.ndarray:
-    """Load the first numeric column from a text/CSV/NPY waveform file."""
+    """Load the first numeric column from a text/CSV/NPY/OpenXML waveform file."""
     input_path = Path(path)
     if not input_path.is_file():
         raise ValueError(f"waveform file does not exist: {input_path}")
     if input_path.suffix.lower() == ".npy":
         values = np.load(input_path, allow_pickle=False)
+    elif is_zipfile(input_path):
+        # Some field exports have an .csv suffix but contain an XLSX payload.
+        values = _load_openxml_first_numeric_column(input_path)
     else:
         values = None
         try:
@@ -110,6 +170,46 @@ def native_spectra(signal: np.ndarray, sampling_rate_hz: float) -> tuple[np.ndar
     return frequency[keep], ordinary[keep], envelope_spectrum[keep]
 
 
+def process_signal(
+    signal: np.ndarray,
+    sampling_rate_hz: float,
+    mode: SignalProcessingMode = "native",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return the time signal and the two spectra used by the model pipeline."""
+    x = np.asarray(signal, dtype=np.float64).reshape(-1)
+    if mode == "native":
+        frequency, ordinary, envelope = native_spectra(x, sampling_rate_hz)
+        return x, frequency, ordinary, envelope
+    if mode != "vibration_analysis":
+        raise ValueError(f"unsupported signal processing mode: {mode}")
+
+    result = vibration_analysis(x, sampling_rate_hz)
+    frequency = np.asarray(result["frequency"], dtype=np.float64)
+    envelope_frequency = np.asarray(result["envelope_frequency"], dtype=np.float64)
+    if not np.array_equal(frequency, envelope_frequency):
+        raise RuntimeError("ordinary and envelope spectra use inconsistent axes")
+    keep = frequency <= float(sampling_rate_hz) / 2.56
+    return (
+        np.asarray(result["time_signal"], dtype=np.float64),
+        frequency[keep],
+        np.asarray(result["rms_spectrum"], dtype=np.float64)[keep],
+        np.asarray(result["envelope_rms_spectrum"], dtype=np.float64)[keep],
+    )
+
+
+def process_time_signal(
+    signal: np.ndarray,
+    mode: SignalProcessingMode = "native",
+) -> np.ndarray:
+    """Return only the mode-consistent time input without computing spectra."""
+    x = np.asarray(signal, dtype=np.float64).reshape(-1)
+    if mode == "native":
+        return x
+    if mode == "vibration_analysis":
+        return x - float(np.mean(x))
+    raise ValueError(f"unsupported signal processing mode: {mode}")
+
+
 @dataclass(frozen=True)
 class FrequencyGrid:
     axis_hz: np.ndarray
@@ -151,6 +251,7 @@ class PreprocessState:
     frequency_grid: FrequencyGrid
     rpm_min: float
     rpm_max: float
+    signal_processing_mode: SignalProcessingMode = "native"
 
     def normalize_time(self, signal: np.ndarray) -> np.ndarray:
         if not math.isfinite(self.amplitude_p995) or self.amplitude_p995 <= 0:

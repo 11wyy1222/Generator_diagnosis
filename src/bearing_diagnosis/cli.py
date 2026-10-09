@@ -17,6 +17,14 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--output-root", required=True)
     build.add_argument("--objects-config", default="configs/objects.json")
     build.add_argument("--sources-config", default="configs/data_sources.json")
+    split = sub.add_parser(
+        "build-split", help="build a model-specific split from an admitted sample manifest"
+    )
+    split.add_argument("--manifest", required=True)
+    split.add_argument("--objects-config", required=True)
+    split.add_argument("--output", required=True)
+    split.add_argument("--group-output", required=True)
+    split.add_argument("--seed", type=int, default=2026)
     test = sub.add_parser("test", help="evaluate one frozen model on a manifest test split")
     test.add_argument("--run-dir", required=True)
     test.add_argument("--manifest", required=True)
@@ -34,6 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibrate.add_argument("--run-dir", required=True)
     calibrate.add_argument("--output-dir", required=True)
+    freeze = sub.add_parser(
+        "freeze-run", help="hash and freeze one v1 model, preprocessing state, and feature pipeline"
+    )
+    freeze.add_argument("--run-dir", required=True)
+    freeze.add_argument("--output", required=True)
+    freeze.add_argument("--source-root", default=".")
     train = sub.add_parser("train", help="train one frozen manifest split")
     train.add_argument("--config", required=True)
     train.add_argument("--manifest", required=True)
@@ -44,6 +58,33 @@ def build_parser() -> argparse.ArgumentParser:
         default="cuda",
         help="training device (default: cuda; fails instead of falling back to CPU)",
     )
+    anomaly_train = sub.add_parser(
+        "train-anomaly", help="fit a normal-only anomaly model on frozen development data"
+    )
+    anomaly_train.add_argument("--manifest", required=True)
+    anomaly_train.add_argument("--run-dir", required=True)
+    anomaly_train.add_argument("--machine-type", default="dfig")
+    anomaly_test = sub.add_parser(
+        "test-anomaly", help="evaluate a frozen anomaly model on one manifest split"
+    )
+    anomaly_test.add_argument("--run-dir", required=True)
+    anomaly_test.add_argument("--manifest", required=True)
+    anomaly_test.add_argument("--split", required=True)
+    anomaly_test.add_argument("--output-dir", required=True)
+    anomaly_test.add_argument("--machine-type", default="dfig")
+    target_calibration = sub.add_parser(
+        "evaluate-target-calibrated",
+        help="calibrate a v1 threshold on early target-normal history and test only later data",
+    )
+    target_calibration.add_argument("--run-dir", required=True)
+    target_calibration.add_argument("--manifest", required=True)
+    target_calibration.add_argument("--predictions", required=True)
+    target_calibration.add_argument("--output-dir", required=True)
+    target_calibration.add_argument("--object-id", required=True)
+    target_calibration.add_argument("--freeze-manifest", required=True)
+    target_calibration.add_argument("--normal-fraction", type=float, default=.60)
+    target_calibration.add_argument("--normal-quantile", type=float, default=.95)
+    target_calibration.add_argument("--embargo-hours", type=float, default=24.0)
     infer = sub.add_parser("infer", help="run one waveform inference")
     infer.add_argument("--run-dir", required=True)
     infer.add_argument("--sample-id", required=True)
@@ -74,6 +115,18 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
+    if args.command == "build-split":
+        from .manifest import build_split_manifest
+
+        result = build_split_manifest(
+            args.manifest,
+            args.objects_config,
+            args.output,
+            args.group_output,
+            args.seed,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     if args.command == "test":
         from .dataset import records_from_manifest
         from .testing import load_run_config, test_one_run
@@ -83,13 +136,24 @@ def main(argv: list[str] | None = None) -> int:
         if args.object_id:
             selected = set(args.object_id)
             records = [record for record in records if record.object_id in selected]
-        result = test_one_run(args.run_dir, records, args.output_dir, args.device)
+        if config.algorithm_version == "v2_ssl_mil":
+            from .testing_v2 import test_one_run_v2
+
+            result = test_one_run_v2(args.run_dir, records, args.output_dir, args.device)
+        else:
+            result = test_one_run(args.run_dir, records, args.output_dir, args.device)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "calibrate-threshold":
         from .calibration import calibrate_threshold
 
         result = calibrate_threshold(args.run_dir, args.output_dir)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "freeze-run":
+        from .freeze import create_freeze_manifest
+
+        result = create_freeze_manifest(args.run_dir, args.output, args.source_root)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "validate-manifest":
@@ -113,6 +177,39 @@ def main(argv: list[str] | None = None) -> int:
         validation_records = records_from_manifest(args.manifest, "validation", config.machine_type)
         result = train_one_run(config, train_records, validation_records, args.run_dir, args.seed, args.device)
         print(json.dumps(result, ensure_ascii=False))
+        return 0
+    if args.command == "train-anomaly":
+        from .anomaly_detection import train_anomaly
+        from .dataset import records_from_manifest
+
+        records = records_from_manifest(args.manifest, machine_type=args.machine_type)
+        development = [record for record in records if record.dataset_split in {"train", "validation"}]
+        result = train_anomaly(development, args.run_dir)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    if args.command == "test-anomaly":
+        from .anomaly_detection import test_anomaly
+        from .dataset import records_from_manifest
+
+        records = records_from_manifest(args.manifest, args.split, args.machine_type)
+        result = test_anomaly(args.run_dir, records, args.output_dir)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    if args.command == "evaluate-target-calibrated":
+        from .target_calibration import evaluate_target_calibration
+
+        result = evaluate_target_calibration(
+            args.run_dir,
+            args.manifest,
+            args.predictions,
+            args.output_dir,
+            args.object_id,
+            normal_fraction=args.normal_fraction,
+            normal_quantile=args.normal_quantile,
+            embargo_hours=args.embargo_hours,
+            freeze_manifest_path=args.freeze_manifest,
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     from .inference import BearingInference, InferenceInput
 
